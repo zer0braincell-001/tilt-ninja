@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>tilt-ninja — Stage 1: tilt aim test</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #111;
+    color: #eee;
+    font-family: ui-monospace, monospace;
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+
+  #startOverlay {
+    position: fixed; inset: 0;
+    background: #111;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px;
+    z-index: 20;
+  }
+  #startBtn {
+    font: inherit;
+    font-size: 22px;
+    padding: 28px 48px;
+    background: #222;
+    color: #fff;
+    border: 2px solid #666;
+    cursor: pointer;
+  }
+  #startBtn:active { background: #333; }
+  #startHint { color: #999; font-size: 12px; max-width: 80%; text-align: center; line-height: 1.5; }
+
+  #warn {
+    position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%);
+    background: #300; color: #fbb;
+    border: 1px solid #a44;
+    padding: 14px 18px;
+    font-size: 13px;
+    max-width: 85%;
+    z-index: 30;
+    display: none;
+    line-height: 1.5;
+  }
+
+  #debug {
+    position: fixed; top: 8px; left: 8px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #9c9;
+    background: rgba(0,0,0,0.55);
+    padding: 6px 8px;
+    z-index: 10;
+    pointer-events: none;
+    white-space: pre;
+  }
+
+  #controls {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.65);
+    padding: 10px 14px 14px;
+    z-index: 10;
+    display: none;
+  }
+  #controls.on { display: block; }
+  .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .row label { width: 92px; font-size: 12px; color: #ccc; flex: none; }
+  .row input[type=range] { flex: 1; height: 28px; }
+  .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
+  #recenter {
+    font: inherit; font-size: 14px;
+    padding: 10px 0;
+    width: 100%;
+    background: #222; color: #fff;
+    border: 1px solid #666;
+    cursor: pointer;
+  }
+  #recenter:active { background: #333; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="debug">waiting…</div>
+
+<div id="controls">
+  <button id="recenter">RECENTER</button>
+  <div class="row">
+    <label for="sensX">sensX (px/°)</label>
+    <input id="sensX" type="range" min="1" max="30" step="0.5" value="8">
+    <span class="val" id="sensXVal">8.0</span>
+  </div>
+  <div class="row">
+    <label for="sensY">sensY (px/°)</label>
+    <input id="sensY" type="range" min="1" max="30" step="0.5" value="8">
+    <span class="val" id="sensYVal">8.0</span>
+  </div>
+  <div class="row">
+    <label for="alpha">smooth α</label>
+    <input id="alpha" type="range" min="0.05" max="1" step="0.05" value="0.3">
+    <span class="val" id="alphaVal">0.30</span>
+  </div>
+</div>
+
+<div id="warn">No orientation data — pastikan HTTPS/secure context (Android Chrome butuh HTTPS buat DeviceOrientation).</div>
+
+<div id="startOverlay">
+  <button id="startBtn">TAP TO START</button>
+  <div id="startHint">Pegang HP portrait kayak pedang, arahkan ke posisi netral, lalu tap.
+Posisi saat tap = titik tengah (kalibrasi origin).</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('stage');
+  var ctx = canvas.getContext('2d');
+  var debugEl = document.getElementById('debug');
+  var warnEl = document.getElementById('warn');
+  var overlay = document.getElementById('startOverlay');
+  var controls = document.getElementById('controls');
+
+  var W = 0, H = 0, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // --- tuning (live via slider) ---
+  var sensX = 8, sensY = 8, alpha = 0.3;
+  function bindSlider(id, valId, fmt, set) {
+    var el = document.getElementById(id);
+    var valEl = document.getElementById(valId);
+    function apply() {
+      var v = parseFloat(el.value);
+      set(v);
+      valEl.textContent = fmt(v);
+    }
+    el.addEventListener('input', apply);
+    apply();
+  }
+  bindSlider('sensX', 'sensXVal', function (v) { return v.toFixed(1); }, function (v) { sensX = v; });
+  bindSlider('sensY', 'sensYVal', function (v) { return v.toFixed(1); }, function (v) { sensY = v; });
+  bindSlider('alpha', 'alphaVal', function (v) { return v.toFixed(2); }, function (v) { alpha = v; });
+
+  // --- orientation state ---
+  var started = false;
+  var hasOrigin = false;
+  var beta0 = 0, gamma0 = 0;       // calibration origin
+  var rawBeta = 0, rawGamma = 0;   // latest raw reading
+  var haveData = false;
+  var sx = -1, sy = -1;            // smoothed blade position (EMA)
+
+  // Hz counter
+  var evCount = 0, hz = 0, hzT0 = 0;
+
+  function onOrientation(e) {
+    if (e.beta === null || e.gamma === null) return;
+    rawBeta = e.beta;
+    rawGamma = e.gamma;
+    haveData = true;
+    if (!hasOrigin) {
+      beta0 = rawBeta;
+      gamma0 = rawGamma;
+      hasOrigin = true;
+    }
+    evCount++;
+    var now = performance.now();
+    if (hzT0 === 0) hzT0 = now;
+    if (now - hzT0 >= 1000) {
+      hz = Math.round(evCount * 1000 / (now - hzT0));
+      evCount = 0;
+      hzT0 = now;
+    }
+  }
+
+  function recenter() {
+    if (haveData) {
+      beta0 = rawBeta;
+      gamma0 = rawGamma;
+      sx = W / 2;
+      sy = H / 2;
+    }
+  }
+  document.getElementById('recenter').addEventListener('click', recenter);
+
+  document.getElementById('startBtn').addEventListener('click', function () {
+    started = true;
+    overlay.style.display = 'none';
+    controls.classList.add('on');
+    window.addEventListener('deviceorientation', onOrientation);
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(function () {});
+    }
+    setTimeout(function () {
+      if (!haveData) warnEl.style.display = 'block';
+    }, 2000);
+  });
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  // --- render loop ---
+  function draw() {
+    requestAnimationFrame(draw);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, W, H);
+
+    if (!started) return;
+
+    var dB = rawBeta - beta0;
+    var dG = rawGamma - gamma0;
+    var tx = clamp(W / 2 + dG * sensX, 0, W);
+    var ty = clamp(H / 2 + dB * sensY, 0, H);
+
+    if (sx < 0) { sx = tx; sy = ty; }
+    sx += alpha * (tx - sx);
+    sy += alpha * (ty - sy);
+
+    if (haveData) {
+      warnEl.style.display = 'none';
+      // center marker
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - 10, H / 2); ctx.lineTo(W / 2 + 10, H / 2);
+      ctx.moveTo(W / 2, H / 2 - 10); ctx.lineTo(W / 2, H / 2 + 10);
+      ctx.stroke();
+
+      // blade crosshair
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
+      ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#0f0';
+      ctx.fill();
+    }
+
+    debugEl.textContent =
+      'raw   beta ' + rawBeta.toFixed(1) + '  gamma ' + rawGamma.toFixed(1) + '\n' +
+      'off   dB ' + dB.toFixed(1) + '  dG ' + dG.toFixed(1) + '\n' +
+      'pos   x ' + sx.toFixed(0) + '  y ' + sy.toFixed(0) + '\n' +
+      'rate  ' + hz + ' Hz' + (haveData ? '' : '  (no data)');
+  }
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
