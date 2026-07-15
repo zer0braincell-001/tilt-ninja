@@ -466,6 +466,11 @@
   var prevSx = -1, prevSy = -1;
   var speed = 0, peak = 0, peakT = 0;
   var PEAK_HOLD_MS = 1500;
+  // dt untuk SPEED = selisih timestamp PENGIRIM (jam HP, monotonic) — bukan waktu
+  // nyampe. Jitter jaringan ±7ms di atas interval ~29ms bikin speed meleset
+  // -20%..+45%; selisih jam yang sama menghilangkan itu total.
+  var lastSendTs = -1, pktSx = -1, pktSy = -1;
+  var lastDtSend = -1, lastDtRecv = -1;
   document.getElementById('resetPeak').addEventListener('click', function () {
     peak = 0;
     peakT = performance.now();
@@ -632,7 +637,8 @@
 
       var now = performance.now();
       if (lastArrive > 0) {
-        var dt = now - lastArrive;
+        var dt = now - lastArrive;      // waktu nyampe: HANYA buat statistik jaringan
+        lastDtRecv = dt;
         dtEma = dtEma < 0 ? dt : dtEma + 0.1 * (dt - dtEma);
         jitter += 0.1 * (Math.abs(dt - dtEma) - jitter);
       }
@@ -651,6 +657,22 @@
 
       lastQ = { w: m.q[0], x: m.q[1], y: m.q[2], z: m.q[3] };
       if (!plcBasis) recenter();    // basis awal dari paket pertama
+
+      // SPEED dari timestamp pengirim. Guard:
+      //   dts <= 0   -> out-of-order / controller reload (ts reset) -> skip, resync
+      //   dts > 0.2s -> gap/drop/reconnect -> skip, resync (jangan speed ngawur)
+      if (typeof m.ts === 'number') {
+        if (lastSendTs >= 0) lastDtSend = m.ts - lastSendTs;
+        if (lastSendTs >= 0 && pktSx >= 0 && sx >= 0) {
+          var dts = (m.ts - lastSendTs) / 1000;
+          if (dts > 0 && dts <= 0.2) {
+            var sdx = sx - pktSx, sdy = sy - pktSy;
+            speed = Math.sqrt(sdx * sdx + sdy * sdy) / dts;
+          }
+        }
+        lastSendTs = m.ts;
+        pktSx = sx; pktSy = sy;
+      }
     };
   }
   document.getElementById('connectBtn').addEventListener('click', connect);
@@ -764,16 +786,14 @@
       if (tx !== null) {
         if (sx < 0) { sx = tx; sy = ty; }
         segAx = sx; segAy = sy;
-        segValid = prevSx >= 0 && dt > 0;
+        segValid = prevSx >= 0;
         sx += alpha * (tx - sx);   // EMA tetap, di posisi akhir
         sy += alpha * (ty - sy);
-        if (segValid) {
-          var ddx = sx - prevSx, ddy = sy - prevSy;
-          speed = Math.sqrt(ddx * ddx + ddy * ddy) / dt;
-          if (speed >= peak || now - peakT > PEAK_HOLD_MS) {
-            peak = speed;
-            peakT = now;
-          }
+        // speed di-update per paket dari timestamp pengirim (lihat onmessage);
+        // deteksi hit tetap pakai segmen posisi ter-smooth. Di sini cuma peak-hold.
+        if (speed >= peak || now - peakT > PEAK_HOLD_MS) {
+          peak = speed;
+          peakT = now;
         }
         prevSx = sx; prevSy = sy;
 
@@ -831,7 +851,8 @@
       'mode    ' + mode + (Hmat ? '' : ' (belum ada kalibrasi)') + '\n' +
       'uw      ' + lastU.toFixed(4) + '  ' + lastW.toFixed(4) + '\n' +
       'pos     x ' + (sx < 0 ? '—' : sx.toFixed(0)) + '  y ' + (sy < 0 ? '—' : sy.toFixed(0)) + '\n' +
-      'spd     ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '  thr ' + sliceThr.toFixed(0) +
+      'spd     ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '  thr ' + sliceThr.toFixed(0) + '\n' +
+      'dt      send ' + (lastDtSend < 0 ? '—' : lastDtSend.toFixed(1)) + '  recv ' + (lastDtRecv < 0 ? '—' : lastDtRecv.toFixed(1)) + ' (ms)' +
       (calibStep < 0 && calibMsg ? '\nnote    ' + calibMsg : '');
   }
 
