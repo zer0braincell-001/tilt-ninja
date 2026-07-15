@@ -218,6 +218,7 @@ Tap untuk mulai kirim orientasi.</div>
 
   function connect() {
     wantConnect = true;
+    clearTimeout(reconnectTimer);   // batalkan reconnect menggantung — jaga SATU socket
     if (ws) {
       ws.onclose = null;
       try { ws.close(); } catch (e) {}
@@ -252,9 +253,12 @@ Tap untuk mulai kirim orientasi.</div>
   // CAPTURE: pointerdown (bukan click) = timing paling awal, sebelum goyangan tap
   // merambat. Kirim rata-rata buffer SEBELUM tap, bukan quaternion saat tap.
   var lastCapInfo = '';
+  var lastCapTap = -1e9;   // debounce: satu trigger per 500ms, HANYA pointerdown
   document.getElementById('captureBtn').addEventListener('pointerdown', function (e) {
     e.preventDefault();
     var tap = performance.now();
+    if (tap - lastCapTap < 500) { lastCapInfo = 'cap: debounced'; return; }
+    lastCapTap = tap;
     var samples = [];
     for (var i = 0; i < ringBuf.length; i++) {
       if (tap - ringBuf[i].ts <= CAPTURE_WINDOW_MS) samples.push(ringBuf[i]);
@@ -264,7 +268,7 @@ Tap untuk mulai kirim orientasi.</div>
     if (!qa) { lastCapInfo = 'cap: avg fail'; return; }
     if (ws && wsState === 'open') {
       try {
-        ws.send(JSON.stringify({ btn: 'capture', q: qa }));
+        ws.send(JSON.stringify({ btn: 'capture', id: Math.random().toString(36).slice(2, 10), q: qa }));
         lastCapInfo = 'cap sent (' + samples.length + ' smp)';
       } catch (err) { lastCapInfo = 'cap: send fail'; }
     } else {
