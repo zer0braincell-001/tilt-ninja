@@ -135,8 +135,8 @@
   </div>
   <div class="row">
     <label for="sweep">sweep (°)</label>
-    <input id="sweep" type="range" min="20" max="120" step="1" value="45">
-    <span class="val" id="sweepVal">45</span>
+    <input id="sweep" type="range" min="20" max="120" step="1" value="35">
+    <span class="val" id="sweepVal">35</span>
   </div>
   <div class="row">
     <label for="relGain">rel gain px/°</label>
@@ -205,7 +205,7 @@
     <input id="room" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (mode placeholder).</div>
+  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis).</div>
 </div>
 
 <script>
@@ -237,7 +237,7 @@
   // --- tuning ---
   var sensX = 12, sensY = 12, alpha = 0.3;
   var sliceThr = 1200, spawnRate = 0.8, grav = 1200, fruitR = 45;
-  var sweepDeg = 45, relGain = 12, relDeadzone = 0.3, centerPull = 0;
+  var sweepDeg = 35, relGain = 12, relDeadzone = 0.3, centerPull = 0;
 
   // restore preferensi relative + mode SEBELUM slider di-bind (bind baca value elemen)
   var REL_KEY = 'tiltNinjaRel';
@@ -414,6 +414,7 @@
   var calibrateBtn = document.getElementById('calibrate');
   var redoBtn = document.getElementById('redoCorner');
   var clearCalibBtn = document.getElementById('clearCalib');
+  var recenterBtn = document.getElementById('recenter');
 
   function setMode(m) {
     if (m === 'calibrated' && !Hmat) m = 'placeholder';
@@ -433,6 +434,8 @@
     calibrateBtn.style.display = rel ? 'none' : 'block';
     clearCalibBtn.style.display = rel ? 'none' : 'block';
     verifyLbl.style.display = rel ? 'none' : 'flex';
+    // tombol tetap tampil di semua mode; di relative dia teleport ke tengah
+    recenterBtn.textContent = rel ? 'RECENTER (R) — ke tengah' : 'RECENTER (R) — placeholder';
   }
   mapPlaceholder.addEventListener('change', function () { if (this.checked) { setMode('placeholder'); saveRel(); } });
   mapCalibrated.addEventListener('change', function () { if (this.checked) { setMode('calibrated'); saveRel(); } });
@@ -813,7 +816,10 @@
       lastSeq = m.t;
 
       lastQ = { w: m.q[0], x: m.q[1], y: m.q[2], z: m.q[3] };
-      if (!plcBasis) recenter();    // basis awal dari paket pertama
+      // basis awal placeholder dari paket pertama. Di relative JANGAN dipanggil:
+      // recenter di sana = teleport ke tengah (bakal ke-reset tiap paket karena
+      // plcBasis tetap null); relX/relY sudah init sendiri di updateRelative().
+      if (!plcBasis && mode !== 'relative') recenter();
 
       // SPEED dari timestamp pengirim. Guard:
       //   dts <= 0   -> out-of-order / controller reload (ts reset) -> skip, resync
@@ -833,7 +839,15 @@
   }
   document.getElementById('connectBtn').addEventListener('click', connect);
 
-  function recenter() { // placeholder mode saja; frame calibrated didefinisikan 4 pojok
+  function recenter() { // mode-aware. relative = teleport ke tengah; lainnya = reset basis placeholder
+    if (mode === 'relative') {
+      // padanan "angkat mouse, taruh di tengah meja": relative mengakumulasi
+      // offset -> pointer bisa nyangkut di pojok. plcBasis TIDAK disentuh.
+      relX = W / 2; relY = H / 2;
+      relPrevYaw = null;            // reset delta state — jangan lompat
+      sx = -1; sy = -1;             // EMA mulai fresh dari tengah, bukan nyeret dari posisi lama
+      return;
+    }
     if (!lastQ) return;
     var v = rotateDeviceY(lastQ);
     var B = basisFrom(v);
@@ -845,7 +859,7 @@
     sx = W / 2;
     sy = H / 2;
   }
-  document.getElementById('recenter').addEventListener('click', recenter);
+  recenterBtn.addEventListener('click', recenter);
   window.addEventListener('keydown', function (e) {
     if (e.key === 'r' || e.key === 'R') recenter();
     if ((e.key === 'm' || e.key === 'M') && calibStep < 0) cycleMode();
