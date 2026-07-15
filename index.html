@@ -74,15 +74,16 @@
   .row label { width: 92px; font-size: 12px; color: #ccc; flex: none; }
   .row input[type=range] { flex: 1; height: 28px; }
   .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
-  #recenter {
+  .btnrow { display: flex; gap: 10px; }
+  #recenter, #resetPeak {
     font: inherit; font-size: 14px;
     padding: 10px 0;
-    width: 100%;
+    flex: 1;
     background: #222; color: #fff;
     border: 1px solid #666;
     cursor: pointer;
   }
-  #recenter:active { background: #333; }
+  #recenter:active, #resetPeak:active { background: #333; }
 </style>
 </head>
 <body>
@@ -91,7 +92,10 @@
 <div id="debug">waiting…</div>
 
 <div id="controls">
-  <button id="recenter">RECENTER</button>
+  <div class="btnrow">
+    <button id="recenter">RECENTER</button>
+    <button id="resetPeak">RESET PEAK</button>
+  </div>
   <div class="row">
     <label for="sensX">sensX (px/°)</label>
     <input id="sensX" type="range" min="1" max="30" step="0.5" value="8">
@@ -167,6 +171,12 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
   var haveData = false;
   var sx = -1, sy = -1;            // smoothed blade position (EMA)
 
+  // --- pointer speed (dari posisi ter-smooth, bukan sensor baru) ---
+  var prevSx = -1, prevSy = -1, prevT = 0;
+  var speed = 0;                   // px/s
+  var peak = 0, peakT = 0;         // peak-hold
+  var PEAK_HOLD_MS = 1500;
+
   // Hz counter
   var evCount = 0, hz = 0, hzT0 = 0;
 
@@ -200,6 +210,11 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
   }
   document.getElementById('recenter').addEventListener('click', recenter);
 
+  document.getElementById('resetPeak').addEventListener('click', function () {
+    peak = 0;
+    peakT = performance.now();
+  });
+
   document.getElementById('startBtn').addEventListener('click', function () {
     started = true;
     overlay.style.display = 'none';
@@ -232,6 +247,20 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
     sx += alpha * (tx - sx);
     sy += alpha * (ty - sy);
 
+    var nowT = performance.now();
+    if (prevT > 0 && prevSx >= 0) {
+      var dt = (nowT - prevT) / 1000;
+      if (dt > 0) {
+        var dx = sx - prevSx, dy = sy - prevSy;
+        speed = Math.sqrt(dx * dx + dy * dy) / dt;
+      }
+      if (speed >= peak || nowT - peakT > PEAK_HOLD_MS) {
+        peak = speed;
+        peakT = nowT;
+      }
+    }
+    prevSx = sx; prevSy = sy; prevT = nowT;
+
     if (haveData) {
       warnEl.style.display = 'none';
       // center marker
@@ -259,6 +288,7 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
       'raw   beta ' + rawBeta.toFixed(1) + '  gamma ' + rawGamma.toFixed(1) + '\n' +
       'off   dB ' + dB.toFixed(1) + '  dG ' + dG.toFixed(1) + '\n' +
       'pos   x ' + sx.toFixed(0) + '  y ' + sy.toFixed(0) + '\n' +
+      'spd   ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '\n' +
       'rate  ' + hz + ' Hz' + (haveData ? '' : '  (no data)');
   }
   requestAnimationFrame(draw);
