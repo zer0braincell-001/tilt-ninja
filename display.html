@@ -92,6 +92,15 @@
   }
   .btnrow button:active { background: #333; }
   #redoCorner { display: none; }
+  button.preset {
+    font: inherit; font-size: 12px;
+    padding: 4px 12px;
+    background: #222; color: #fff;
+    border: 1px solid #666;
+    cursor: pointer;
+    flex: none;
+  }
+  button.preset:active { background: #333; }
 </style>
 </head>
 <body>
@@ -113,8 +122,36 @@
     <label>mapping</label>
     <label class="cb"><input type="radio" name="mapmode" id="mapPlaceholder" checked> placeholder</label>
     <label class="cb"><input type="radio" name="mapmode" id="mapCalibrated"> calibrated</label>
-    <label class="cb"><input id="verify" type="checkbox"> verify tepi</label>
+    <label class="cb"><input type="radio" name="mapmode" id="mapRelative"> relative</label>
+    <label class="cb" id="verifyLbl"><input id="verify" type="checkbox"> verify tepi</label>
     <label class="cb"><input id="game" type="checkbox"> GAME</label>
+  </div>
+  <div class="row">
+    <label>relative</label>
+    <label class="cb"><input id="autoGain" type="checkbox" checked> AUTO GAIN</label>
+    <button class="preset" id="sw35">35</button>
+    <button class="preset" id="sw45">45</button>
+    <button class="preset" id="sw60">60</button>
+  </div>
+  <div class="row">
+    <label for="sweep">sweep (°)</label>
+    <input id="sweep" type="range" min="20" max="120" step="1" value="45">
+    <span class="val" id="sweepVal">45</span>
+  </div>
+  <div class="row">
+    <label for="relGain">rel gain px/°</label>
+    <input id="relGain" type="range" min="1" max="40" step="0.5" value="12">
+    <span class="val" id="relGainVal">12.0</span>
+  </div>
+  <div class="row">
+    <label for="dead">deadzone °/s</label>
+    <input id="dead" type="range" min="0" max="5" step="0.1" value="0.3">
+    <span class="val" id="deadVal">0.3</span>
+  </div>
+  <div class="row">
+    <label for="pull">center pull /s</label>
+    <input id="pull" type="range" min="0" max="3" step="0.1" value="0">
+    <span class="val" id="pullVal">0.0</span>
   </div>
   <div class="row">
     <label for="thr">slice thr px/s</label>
@@ -192,6 +229,7 @@
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (autoGainEl) updateGainUI();   // auto gain = W/sweep -> tampilan ikut resize
   }
   window.addEventListener('resize', resize);
   resize();
@@ -199,6 +237,19 @@
   // --- tuning ---
   var sensX = 12, sensY = 12, alpha = 0.3;
   var sliceThr = 1200, spawnRate = 0.8, grav = 1200, fruitR = 45;
+  var sweepDeg = 45, relGain = 12, relDeadzone = 0.3, centerPull = 0;
+
+  // restore preferensi relative + mode SEBELUM slider di-bind (bind baca value elemen)
+  var REL_KEY = 'tiltNinjaRel';
+  var relSaved = null;
+  try { relSaved = JSON.parse(localStorage.getItem(REL_KEY)); } catch (e) {}
+  if (relSaved) {
+    if (typeof relSaved.sweep === 'number') document.getElementById('sweep').value = relSaved.sweep;
+    if (typeof relSaved.relGain === 'number') document.getElementById('relGain').value = relSaved.relGain;
+    if (typeof relSaved.dead === 'number') document.getElementById('dead').value = relSaved.dead;
+    if (typeof relSaved.pull === 'number') document.getElementById('pull').value = relSaved.pull;
+    if (typeof relSaved.autoGain === 'boolean') document.getElementById('autoGain').checked = relSaved.autoGain;
+  }
   function bindSlider(id, valId, fmt, set) {
     var el = document.getElementById(id);
     var valEl = document.getElementById(valId);
@@ -217,6 +268,35 @@
   bindSlider('spawn', 'spawnVal', function (v) { return v.toFixed(1); }, function (v) { spawnRate = v; });
   bindSlider('grav', 'gravVal', function (v) { return v.toFixed(0); }, function (v) { grav = v; });
   bindSlider('frad', 'fradVal', function (v) { return v.toFixed(0); }, function (v) { fruitR = v; });
+  bindSlider('sweep', 'sweepVal', function (v) { return v.toFixed(0); }, function (v) { sweepDeg = v; if (autoGainEl) updateGainUI(); });
+  bindSlider('relGain', 'relGainVal', function (v) { return v.toFixed(1); }, function (v) { relGain = v; });
+  bindSlider('dead', 'deadVal', function (v) { return v.toFixed(1); }, function (v) { relDeadzone = v; });
+  bindSlider('pull', 'pullVal', function (v) { return v.toFixed(1); }, function (v) { centerPull = v; });
+
+  // AUTO GAIN: gain = W / sweep (px per derajat), isotropik X=Y. Di relative, ukuran
+  // layar cuma mempengaruhi RASA (px/°), bukan KEBENARAN mapping -> boleh otomatis.
+  var autoGainEl = document.getElementById('autoGain');
+  function relGainEff() { return autoGainEl.checked ? W / Math.max(sweepDeg, 1) : relGain; }
+  function updateGainUI() {
+    var el = document.getElementById('relGain');
+    el.disabled = autoGainEl.checked;
+    document.getElementById('relGainVal').textContent =
+      autoGainEl.checked ? relGainEff().toFixed(1) : relGain.toFixed(1);
+  }
+  autoGainEl.addEventListener('change', function () { updateGainUI(); saveRel(); });
+  function setSweep(v) {
+    var el = document.getElementById('sweep');
+    el.value = v;
+    el.dispatchEvent(new Event('input'));
+    saveRel();
+  }
+  document.getElementById('sw35').addEventListener('click', function () { setSweep(35); });
+  document.getElementById('sw45').addEventListener('click', function () { setSweep(45); });
+  document.getElementById('sw60').addEventListener('click', function () { setSweep(60); });
+  ['sweep', 'relGain', 'dead', 'pull'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', function () { saveRel(); });
+  });
+
   var invX = 1, invY = 1;
   document.getElementById('invX').addEventListener('change', function () { invX = this.checked ? -1 : 1; });
   document.getElementById('invY').addEventListener('change', function () { invY = this.checked ? -1 : 1; });
@@ -328,24 +408,64 @@
 
   var mapPlaceholder = document.getElementById('mapPlaceholder');
   var mapCalibrated = document.getElementById('mapCalibrated');
+  var mapRelative = document.getElementById('mapRelative');
   var verifyEl = document.getElementById('verify');
+  var verifyLbl = document.getElementById('verifyLbl');
   var calibrateBtn = document.getElementById('calibrate');
   var redoBtn = document.getElementById('redoCorner');
+  var clearCalibBtn = document.getElementById('clearCalib');
 
   function setMode(m) {
     if (m === 'calibrated' && !Hmat) m = 'placeholder';
     mode = m;
     mapPlaceholder.checked = (m === 'placeholder');
     mapCalibrated.checked = (m === 'calibrated');
+    mapRelative.checked = (m === 'relative');
+    relPrevYaw = null;              // reset delta state — jangan lompat pas masuk relative
     sx = -1; sy = -1;
+    updateModeUI();
   }
   function updateModeUI() {
     mapCalibrated.disabled = !Hmat;
     redoBtn.style.display = (calibStep >= 0) ? 'block' : 'none';
     calibrateBtn.textContent = (calibStep >= 0) ? 'CANCEL CALIB' : 'CALIBRATE';
+    var rel = (mode === 'relative');
+    calibrateBtn.style.display = rel ? 'none' : 'block';
+    clearCalibBtn.style.display = rel ? 'none' : 'block';
+    verifyLbl.style.display = rel ? 'none' : 'flex';
   }
-  mapPlaceholder.addEventListener('change', function () { if (this.checked) setMode('placeholder'); });
-  mapCalibrated.addEventListener('change', function () { if (this.checked) setMode('calibrated'); });
+  mapPlaceholder.addEventListener('change', function () { if (this.checked) { setMode('placeholder'); saveRel(); } });
+  mapCalibrated.addEventListener('change', function () { if (this.checked) { setMode('calibrated'); saveRel(); } });
+  mapRelative.addEventListener('change', function () { if (this.checked) { setMode('relative'); saveRel(); } });
+
+  // cycle mode tanpa balik ke laptop: keyboard M / tombol MODE di controller
+  var modeFlashName = '', modeFlashUntil = 0;
+  function cycleMode() {
+    var order = ['placeholder', 'calibrated', 'relative'];
+    var next = order[(order.indexOf(mode) + 1) % 3];
+    if (next === 'calibrated' && !Hmat) next = 'relative';
+    setMode(next);
+    saveRel();
+    modeFlashName = mode.toUpperCase();
+    modeFlashUntil = performance.now() + 1000;
+  }
+  function handleModeBtn(id) {
+    if (calibStep >= 0) return;               // abaikan saat flow kalibrasi
+    if (id !== undefined) {
+      if (seenCapIds[id]) return;
+      seenCapIds[id] = true;
+    }
+    cycleMode();
+  }
+
+  function saveRel() {
+    try {
+      localStorage.setItem(REL_KEY, JSON.stringify({
+        mode: mode, autoGain: autoGainEl.checked,
+        sweep: sweepDeg, relGain: relGain, dead: relDeadzone, pull: centerPull
+      }));
+    } catch (e) {}
+  }
 
   function saveCalib() {
     try {
@@ -471,6 +591,42 @@
   // -20%..+45%; selisih jam yang sama menghilangkan itu total.
   var lastSendTs = -1, pktSx = -1, pktSy = -1;
   var lastDtSend = -1, lastDtRecv = -1;
+
+  // --- mode RELATIVE (gyro-mouse): integrasi delta yaw/pitch. Nol posisi, nol
+  // kalibrasi -> kebal user pindah tempat. Tetap dari forward vector world Z-up
+  // yang roll-invariant (jalur sensor yang sama, bukan jalur baru). ---
+  var relX = -1, relY = -1;
+  var relPrevYaw = null, relPrevPitch = 0;
+  var lastDYaw = 0, lastDPitch = 0, lastAngRate = 0;
+  function wrapPI(a) {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
+  function updateRelative(dts) {
+    if (relX < 0) { relX = W / 2; relY = H / 2; }
+    var v = rotateDeviceY(lastQ);
+    var vz = clamp(v[2], -1, 1);
+    var pitch = Math.asin(vz);
+    var yawOk = Math.abs(vz) <= 0.98;   // hampir tegak -> yaw tak terdefinisi -> skip dYaw
+    var yaw = yawOk ? Math.atan2(v[1], v[0]) : null;
+    if (dts <= 0 || dts > 0.2) {        // gap/reconnect/reload -> reset prev, jangan lompat
+      relPrevYaw = yaw;
+      relPrevPitch = pitch;
+      return;
+    }
+    var dYaw = (relPrevYaw !== null && yawOk) ? wrapPI(yaw - relPrevYaw) : 0;
+    var dPitch = pitch - relPrevPitch;
+    relPrevYaw = yaw;
+    relPrevPitch = pitch;
+    var rate = Math.sqrt(dYaw * dYaw + dPitch * dPitch) * R2D / dts;
+    lastDYaw = dYaw * R2D; lastDPitch = dPitch * R2D; lastAngRate = rate;
+    if (rate < relDeadzone) return;     // deadzone laju sudut: nahan drift ngesot
+    var g = relGainEff();
+    // yaw atan2 naik berlawanan jarum jam -> tanda default dibalik biar kanan = kanan
+    relX = clamp(relX - dYaw * R2D * g * invX, 0, W);
+    relY = clamp(relY - dPitch * R2D * g * invY, 0, H);
+  }
   document.getElementById('resetPeak').addEventListener('click', function () {
     peak = 0;
     peakT = performance.now();
@@ -630,6 +786,7 @@
       if (!m) return;
 
       if (m.btn === 'capture') { handleCapture(m.q, m.id); return; }
+      if (m.btn === 'mode') { handleModeBtn(m.id); return; }
       if (m.t === undefined || !m.q) return;
 
       // echo DULUAN, sebelum proses apa pun — RTT ngukur jaringan, bukan render
@@ -662,14 +819,13 @@
       //   dts <= 0   -> out-of-order / controller reload (ts reset) -> skip, resync
       //   dts > 0.2s -> gap/drop/reconnect -> skip, resync (jangan speed ngawur)
       if (typeof m.ts === 'number') {
+        var dts = lastSendTs >= 0 ? (m.ts - lastSendTs) / 1000 : -1;
         if (lastSendTs >= 0) lastDtSend = m.ts - lastSendTs;
-        if (lastSendTs >= 0 && pktSx >= 0 && sx >= 0) {
-          var dts = (m.ts - lastSendTs) / 1000;
-          if (dts > 0 && dts <= 0.2) {
-            var sdx = sx - pktSx, sdy = sy - pktSy;
-            speed = Math.sqrt(sdx * sdx + sdy * sdy) / dts;
-          }
+        if (dts > 0 && dts <= 0.2 && pktSx >= 0 && sx >= 0) {
+          var sdx = sx - pktSx, sdy = sy - pktSy;
+          speed = Math.sqrt(sdx * sdx + sdy * sdy) / dts;
         }
+        if (mode === 'relative') updateRelative(dts);
         lastSendTs = m.ts;
         pktSx = sx; pktSy = sy;
       }
@@ -692,6 +848,7 @@
   document.getElementById('recenter').addEventListener('click', recenter);
   window.addEventListener('keydown', function (e) {
     if (e.key === 'r' || e.key === 'R') recenter();
+    if ((e.key === 'm' || e.key === 'M') && calibStep < 0) cycleMode();
   });
 
   function drawCalibTarget() {
@@ -750,7 +907,12 @@
     var dt = lastFrameT > 0 ? Math.min((now - lastFrameT) / 1000, 0.05) : 0;
     lastFrameT = now;
 
-    bannerEl.style.display = (mode === 'placeholder' && calibStep < 0 && wsState === 'open') ? 'block' : 'none';
+    if (mode === 'relative') {
+      bannerEl.textContent = 'RELATIVE — nol kalibrasi, bebas posisi';
+    } else {
+      bannerEl.textContent = 'MAPPING PLACEHOLDER — belum terkalibrasi. Jalankan CALIBRATE untuk mapping homography.';
+    }
+    bannerEl.style.display = (mode !== 'calibrated' && calibStep < 0 && wsState === 'open') ? 'block' : 'none';
 
     if (calibStep >= 0) {
       drawCalibTarget();            // pointer sengaja disembunyikan; game dibekukan
@@ -770,6 +932,15 @@
               tx = clamp(p.x * W, 0, W);
               ty = clamp(p.y * H, 0, H);
             }
+          }
+        } else if (mode === 'relative') {
+          // posisi diintegrasi per paket di updateRelative(); di sini cuma center pull
+          if (relX >= 0) {
+            if (centerPull > 0 && dt > 0) {
+              relX += (W / 2 - relX) * centerPull * dt;
+              relY += (H / 2 - relY) * centerPull * dt;
+            }
+            tx = relX; ty = relY;
           }
         } else if (plcBasis) {
           // MAPPING PLACEHOLDER — yaw/pitch linear di basis world-up (roll-invariant)
@@ -828,8 +999,17 @@
       if (gameEl.checked) drawHUD();
     }
 
-    // verify tepi: sapu pointer sepanjang tepi — nempel = fit bener
-    if (verifyEl.checked) {
+    // nama mode aktif sesaat pas ganti (M / tombol MODE di controller)
+    if (modeFlashUntil > performance.now()) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '48px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(modeFlashName, W / 2, H / 2);
+      ctx.textAlign = 'start';
+    }
+
+    // verify tepi: sapu pointer sepanjang tepi — nempel = fit bener (bukan buat relative)
+    if (verifyEl.checked && mode !== 'relative') {
       ctx.strokeStyle = '#666';
       ctx.lineWidth = 2;
       ctx.strokeRect(1, 1, W - 2, H - 2);
@@ -853,10 +1033,16 @@
       'pos     x ' + (sx < 0 ? '—' : sx.toFixed(0)) + '  y ' + (sy < 0 ? '—' : sy.toFixed(0)) + '\n' +
       'spd     ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '  thr ' + sliceThr.toFixed(0) + '\n' +
       'dt      send ' + (lastDtSend < 0 ? '—' : lastDtSend.toFixed(1)) + '  recv ' + (lastDtRecv < 0 ? '—' : lastDtRecv.toFixed(1)) + ' (ms)' +
+      (mode === 'relative' ? '\nrel     dYaw ' + lastDYaw.toFixed(2) + '  dPitch ' + lastDPitch.toFixed(2) +
+        '  rate ' + lastAngRate.toFixed(1) + ' °/s  gain ' + relGainEff().toFixed(1) + ' px/°' : '') +
       (calibStep < 0 && calibMsg ? '\nnote    ' + calibMsg : '');
   }
 
   loadCalib();
+  if (relSaved && (relSaved.mode === 'relative' || relSaved.mode === 'placeholder' || relSaved.mode === 'calibrated')) {
+    setMode(relSaved.mode);        // setMode jaga fallback kalau calibrated tanpa data
+  }
+  updateGainUI();
   requestAnimationFrame(draw);
 })();
 </script>

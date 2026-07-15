@@ -78,7 +78,7 @@
     background: #000; color: #fff;
     border: 1px solid #666;
   }
-  #connectBtn {
+  #connectBtn, #modeBtn {
     font: inherit; font-size: 13px;
     padding: 6px 14px;
     background: #222; color: #fff;
@@ -86,7 +86,7 @@
     cursor: pointer;
     flex: none;
   }
-  #connectBtn:active { background: #333; }
+  #connectBtn:active, #modeBtn:active { background: #333; }
 
   /* zona tap lebar — dipencet tanpa liat layar */
   #captureBtn {
@@ -114,6 +114,7 @@
     <label for="roomCode">room</label>
     <input id="roomCode" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
+    <button id="modeBtn">MODE</button>
   </div>
   <button id="captureBtn">CAPTURE</button>
 </div>
@@ -273,6 +274,24 @@ Tap untuk mulai kirim orientasi.</div>
       } catch (err) { lastCapInfo = 'cap: send fail'; }
     } else {
       lastCapInfo = 'cap: not connected';
+    }
+  });
+
+  // MODE: cycle mapping di display tanpa balik ke laptop. Kecil & jauh dari
+  // CAPTURE biar nggak salah pencet. Debounce + id, sama seperti capture.
+  var lastModeTap = -1e9;
+  document.getElementById('modeBtn').addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    var tap = performance.now();
+    if (tap - lastModeTap < 500) return;
+    lastModeTap = tap;
+    if (ws && wsState === 'open') {
+      try {
+        ws.send(JSON.stringify({ btn: 'mode', id: Math.random().toString(36).slice(2, 10) }));
+        lastCapInfo = 'mode sent';
+      } catch (err) { lastCapInfo = 'mode: send fail'; }
+    } else {
+      lastCapInfo = 'mode: not connected';
     }
   });
 
