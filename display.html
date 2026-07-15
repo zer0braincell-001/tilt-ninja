@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tilt-ninja — display (Stage 2a)</title>
+<title>tilt-ninja — display (Stage 2b)</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -25,6 +25,7 @@
     z-index: 15;
     pointer-events: none;
     white-space: nowrap;
+    display: none;
   }
 
   #debug {
@@ -80,26 +81,37 @@
   .row input[type=range] { flex: 1; height: 22px; }
   .row label.cb { width: auto; display: flex; align-items: center; gap: 6px; margin-right: 18px; }
   .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
-  #recenter {
+  .btnrow { display: flex; gap: 10px; }
+  .btnrow button {
     font: inherit; font-size: 14px;
     padding: 8px 0;
-    width: 100%;
+    flex: 1;
     background: #222; color: #fff;
     border: 1px solid #666;
     cursor: pointer;
   }
-  #recenter:active { background: #333; }
+  .btnrow button:active { background: #333; }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
 
-<div id="banner">MAPPING PLACEHOLDER — Stage 2a menilai LAG, bukan akurasi. Homography = Stage 2b.</div>
+<div id="banner">MAPPING PLACEHOLDER — belum terkalibrasi. Jalankan CALIBRATE untuk mapping homography.</div>
 
 <div id="debug">waiting…</div>
 
 <div id="controls">
-  <button id="recenter">RECENTER (R)</button>
+  <div class="btnrow">
+    <button id="calibrate">CALIBRATE</button>
+    <button id="clearCalib">CLEAR CALIBRATION</button>
+    <button id="recenter">RECENTER (R) — placeholder</button>
+  </div>
+  <div class="row">
+    <label>mapping</label>
+    <label class="cb"><input type="radio" name="mapmode" id="mapPlaceholder" checked> placeholder</label>
+    <label class="cb"><input type="radio" name="mapmode" id="mapCalibrated"> calibrated</label>
+    <label class="cb"><input id="verify" type="checkbox"> verify tepi</label>
+  </div>
   <div class="row">
     <label for="sensX">sensX (px/°)</label>
     <input id="sensX" type="range" min="1" max="30" step="0.5" value="12">
@@ -116,7 +128,7 @@
     <span class="val" id="alphaVal">0.30</span>
   </div>
   <div class="row">
-    <label>invert</label>
+    <label>invert (plc)</label>
     <label class="cb"><input id="invX" type="checkbox"> X</label>
     <label class="cb"><input id="invY" type="checkbox"> Y</label>
   </div>
@@ -132,7 +144,7 @@
     <input id="room" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter.</div>
+  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (mode placeholder).</div>
 </div>
 
 <script>
@@ -142,6 +154,7 @@
   var canvas = document.getElementById('stage');
   var ctx = canvas.getContext('2d');
   var debugEl = document.getElementById('debug');
+  var bannerEl = document.getElementById('banner');
   var overlay = document.getElementById('overlay');
   var controls = document.getElementById('controls');
 
@@ -159,7 +172,7 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // --- tuning ---
+  // --- tuning (mode placeholder saja; alpha dipakai dua mode) ---
   var sensX = 12, sensY = 12, alpha = 0.3;
   function bindSlider(id, valId, fmt, set) {
     var el = document.getElementById(id);
@@ -200,10 +213,147 @@
   }
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+  // --- homography: fit 4 titik (u,w) -> pojok layar NORMALIZED (0..1) ---
+  // Normalized biar tahan resize; dikali W/H saat runtime.
+  function gaussSolve(A, b) {
+    var n = A.length, i, j, k, M = [];
+    for (i = 0; i < n; i++) M.push(A[i].concat([b[i]]));
+    for (k = 0; k < n; k++) {
+      var piv = k;
+      for (i = k + 1; i < n; i++) if (Math.abs(M[i][k]) > Math.abs(M[piv][k])) piv = i;
+      if (Math.abs(M[piv][k]) < 1e-12) return null;
+      var tmp = M[k]; M[k] = M[piv]; M[piv] = tmp;
+      for (i = k + 1; i < n; i++) {
+        var f = M[i][k] / M[k][k];
+        for (j = k; j <= n; j++) M[i][j] -= f * M[k][j];
+      }
+    }
+    var x = new Array(n);
+    for (i = n - 1; i >= 0; i--) {
+      var s = M[i][n];
+      for (j = i + 1; j < n; j++) s -= M[i][j] * x[j];
+      x[i] = s / M[i][i];
+    }
+    return x;
+  }
+
+  function fitHomography(src, dst) { // src: [{u,w}]x4, dst: [{x,y}]x4
+    var A = [], b = [], i;
+    for (i = 0; i < 4; i++) {
+      var u = src[i].u, w = src[i].w, x = dst[i].x, y = dst[i].y;
+      A.push([u, w, 1, 0, 0, 0, -x * u, -x * w]); b.push(x);
+      A.push([0, 0, 0, u, w, 1, -y * u, -y * w]); b.push(y);
+    }
+    var h = gaussSolve(A, b);
+    if (!h) return null;
+    return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+  }
+
+  function applyH(Hm, u, w) {
+    var d = Hm[6] * u + Hm[7] * w + Hm[8];
+    if (Math.abs(d) < 1e-12) return null;
+    return {
+      x: (Hm[0] * u + Hm[1] * w + Hm[2]) / d,
+      y: (Hm[3] * u + Hm[4] * w + Hm[5]) / d
+    };
+  }
+
+  // --- kalibrasi state ---
+  var CORNERS_N = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  var CORNER_NAMES = ['KIRI ATAS', 'KANAN ATAS', 'KANAN BAWAH', 'KIRI BAWAH'];
+  var LS_KEY = 'tiltNinjaCalib';
+  var Hmat = null;
+  var mode = 'placeholder';        // 'placeholder' | 'calibrated'
+  var calibStep = -1;              // -1 = tidak kalibrasi; 0..3 = pojok ke-n
+  var calibPts = [];
+  var calibMsg = '';
+  var VY_MIN_CAPTURE = 0.15, VY_MIN_RUNTIME = 0.05;
+
+  var mapPlaceholder = document.getElementById('mapPlaceholder');
+  var mapCalibrated = document.getElementById('mapCalibrated');
+  var verifyEl = document.getElementById('verify');
+  var calibrateBtn = document.getElementById('calibrate');
+
+  function setMode(m) {
+    if (m === 'calibrated' && !Hmat) m = 'placeholder';
+    mode = m;
+    mapPlaceholder.checked = (m === 'placeholder');
+    mapCalibrated.checked = (m === 'calibrated');
+    sx = -1; sy = -1;
+  }
+  function updateModeUI() {
+    mapCalibrated.disabled = !Hmat;
+  }
+  mapPlaceholder.addEventListener('change', function () { if (this.checked) setMode('placeholder'); });
+  mapCalibrated.addEventListener('change', function () { if (this.checked) setMode('calibrated'); });
+
+  function saveCalib() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ H: Hmat, ts: Date.now() })); } catch (e) {}
+  }
+  function loadCalib() {
+    try {
+      var d = JSON.parse(localStorage.getItem(LS_KEY));
+      if (d && d.H && d.H.length === 9) {
+        Hmat = d.H;
+        setMode('calibrated');
+      }
+    } catch (e) {}
+    updateModeUI();
+  }
+
+  calibrateBtn.addEventListener('click', function () {
+    if (calibStep >= 0) {          // sedang kalibrasi -> batal
+      calibStep = -1;
+      calibPts = [];
+      calibMsg = '';
+      calibrateBtn.textContent = 'CALIBRATE';
+      return;
+    }
+    calibPts = [];
+    calibMsg = '';
+    calibStep = 0;
+    calibrateBtn.textContent = 'CANCEL CALIB';
+  });
+
+  document.getElementById('clearCalib').addEventListener('click', function () {
+    Hmat = null;
+    try { localStorage.removeItem(LS_KEY); } catch (e) {}
+    setMode('placeholder');
+    updateModeUI();
+  });
+
+  function handleCapture(qa) {
+    if (calibStep < 0 || !qa || qa.length !== 4) return;
+    var q = { w: qa[0], x: qa[1], y: qa[2], z: qa[3] };
+    var v = rotateDeviceY(q);
+    if (Math.abs(v.y) < VY_MIN_CAPTURE) {
+      calibMsg = 'Capture DITOLAK (v.y ' + v.y.toFixed(2) + ') — arahkan lebih ke depan, ulangi pojok ini.';
+      return;
+    }
+    calibMsg = '';
+    calibPts.push({ u: v.x / v.y, w: v.z / v.y });
+    if (calibPts.length === 4) {
+      var fit = fitHomography(calibPts, CORNERS_N);
+      calibStep = -1;
+      calibrateBtn.textContent = 'CALIBRATE';
+      if (fit) {
+        Hmat = fit;
+        saveCalib();
+        setMode('calibrated');
+        updateModeUI();
+      } else {
+        calibMsg = 'Fit homography GAGAL (titik degenerate) — ulangi kalibrasi.';
+      }
+    } else {
+      calibStep = calibPts.length;
+    }
+  }
+
   // --- state dari stream ---
   var lastQ = null;                 // quaternion mentah terakhir dari controller
-  var q0 = null;                    // origin (semua kalibrasi di display, bukan di HP)
+  var q0 = null;                    // origin — HANYA buat mode placeholder
   var sx = -1, sy = -1;             // posisi pointer ter-smooth (EMA)
+  var lastU = 0, lastW = 0;         // readout debug
 
   // --- statistik jaringan ---
   var wsState = 'idle';
@@ -230,9 +380,12 @@
     ws.onmessage = function (ev) {
       var m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (!m || m.t === undefined || !m.q) return;
+      if (!m) return;
 
-      // echo DULUAN, sebelum render/apapun — RTT ngukur jaringan, bukan render
+      if (m.btn === 'capture') { handleCapture(m.q); return; }
+      if (m.t === undefined || !m.q) return;
+
+      // echo DULUAN, sebelum proses apa pun — RTT ngukur jaringan, bukan render
       try { ws.send(JSON.stringify({ ack: m.t, ts: m.ts })); } catch (e) {}
 
       var now = performance.now();
@@ -260,7 +413,7 @@
   }
   document.getElementById('connectBtn').addEventListener('click', connect);
 
-  function recenter() {
+  function recenter() { // placeholder mode saja; frame calibrated didefinisikan 4 pojok
     if (lastQ) {
       q0 = lastQ;
       sx = W / 2;
@@ -272,45 +425,96 @@
     if (e.key === 'r' || e.key === 'R') recenter();
   });
 
+  function drawCalibTarget() {
+    var c = CORNERS_N[calibStep];
+    var cx = c.x * W, cy = c.y * H;
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, 30, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, 60, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 90, cy); ctx.lineTo(cx + 90, cy);
+    ctx.moveTo(cx, cy - 90); ctx.lineTo(cx, cy + 90);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('KALIBRASI ' + (calibPts.length + 1) + '/4 — pojok ' + CORNER_NAMES[calibStep], W / 2, H / 2 - 20);
+    ctx.font = '18px ui-monospace, monospace';
+    ctx.fillStyle = '#999';
+    ctx.fillText('Arahkan pedang ke target, tekan CAPTURE di HP', W / 2, H / 2 + 20);
+    if (calibMsg) {
+      ctx.fillStyle = '#f88';
+      ctx.fillText(calibMsg, W / 2, H / 2 + 56);
+    }
+    ctx.textAlign = 'start';
+  }
+
   // --- render loop ---
   function draw() {
     requestAnimationFrame(draw);
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, W, H);
 
-    var yaw = 0, pitch = 0;
-    if (lastQ && q0) {
-      var qRel = quatMul(quatConj(q0), lastQ);
-      var v = rotateDeviceY(qRel);
-      yaw = Math.atan2(v.x, v.y);
-      pitch = Math.atan2(v.z, Math.sqrt(v.x * v.x + v.y * v.y));
+    bannerEl.style.display = (mode === 'placeholder' && calibStep < 0 && wsState === 'open') ? 'block' : 'none';
 
-      // MAPPING PLACEHOLDER (Stage 2a) — diganti homography 4-corner di Stage 2b
-      var tx = clamp(W / 2 + yaw * R2D * sensX * invX, 0, W);
-      var ty = clamp(H / 2 + pitch * R2D * sensY * invY, 0, H);
-      if (sx < 0) { sx = tx; sy = ty; }
-      sx += alpha * (tx - sx);
-      sy += alpha * (ty - sy);
+    if (calibStep >= 0) {
+      drawCalibTarget();
+    } else if (lastQ) {
+      var tx = null, ty = null;
+      if (mode === 'calibrated' && Hmat) {
+        // frame acuan = 4 pojok kalibrasi. TANPA q0/recenter.
+        var vc = rotateDeviceY(lastQ);
+        if (Math.abs(vc.y) >= VY_MIN_RUNTIME) {
+          lastU = vc.x / vc.y;
+          lastW = vc.z / vc.y;
+          var p = applyH(Hmat, lastU, lastW);
+          if (p) {
+            tx = clamp(p.x * W, 0, W);
+            ty = clamp(p.y * H, 0, H);
+          }
+        }
+      } else if (q0) {
+        // MAPPING PLACEHOLDER — yaw/pitch linear (Stage 2a)
+        var qRel = quatMul(quatConj(q0), lastQ);
+        var v = rotateDeviceY(qRel);
+        var yaw = Math.atan2(v.x, v.y);
+        var pitch = Math.atan2(v.z, Math.sqrt(v.x * v.x + v.y * v.y));
+        tx = clamp(W / 2 + yaw * R2D * sensX * invX, 0, W);
+        ty = clamp(H / 2 + pitch * R2D * sensY * invY, 0, H);
+      }
 
-      // center marker
-      ctx.strokeStyle = '#444';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(W / 2 - 10, H / 2); ctx.lineTo(W / 2 + 10, H / 2);
-      ctx.moveTo(W / 2, H / 2 - 10); ctx.lineTo(W / 2, H / 2 + 10);
-      ctx.stroke();
+      if (tx !== null) {
+        if (sx < 0) { sx = tx; sy = ty; }
+        sx += alpha * (tx - sx);   // EMA tetap, di posisi akhir
+        sy += alpha * (ty - sy);
 
-      // blade crosshair + dot
-      ctx.strokeStyle = '#fff';
+        // blade crosshair + dot
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
+        ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+        ctx.fillStyle = '#0f0';
+        ctx.fill();
+      }
+    }
+
+    // verify tepi: sapu pointer sepanjang tepi — nempel = fit bener
+    if (verifyEl.checked) {
+      ctx.strokeStyle = '#666';
       ctx.lineWidth = 2;
+      ctx.strokeRect(1, 1, W - 2, H - 2);
       ctx.beginPath();
-      ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
-      ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
+      ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, 12);
+      ctx.moveTo(W / 2, H); ctx.lineTo(W / 2, H - 12);
+      ctx.moveTo(0, H / 2); ctx.lineTo(12, H / 2);
+      ctx.moveTo(W, H / 2); ctx.lineTo(W - 12, H / 2);
       ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(sx, sy, 7, 0, Math.PI * 2);
-      ctx.fillStyle = '#0f0';
-      ctx.fill();
     }
 
     var age = lastArrive > 0 ? (performance.now() - lastArrive) : -1;
@@ -320,8 +524,12 @@
       'jitter  ' + jitter.toFixed(1) + ' ms\n' +
       'drop    ' + dropped + ' pkt\n' +
       'age     ' + (age < 0 ? '—' : age.toFixed(0) + ' ms') + '\n' +
-      'aim     yaw ' + (yaw * R2D).toFixed(1) + '  pitch ' + (pitch * R2D).toFixed(1) + ' (deg)';
+      'mode    ' + mode + (Hmat ? '' : ' (belum ada kalibrasi)') + '\n' +
+      'uw      ' + lastU.toFixed(4) + '  ' + lastW.toFixed(4) + '\n' +
+      'pos     x ' + (sx < 0 ? '—' : sx.toFixed(0)) + '  y ' + (sy < 0 ? '—' : sy.toFixed(0));
   }
+
+  loadCalib();
   requestAnimationFrame(draw);
 })();
 </script>

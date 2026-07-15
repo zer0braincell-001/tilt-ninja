@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>tilt-ninja — controller (Stage 2a)</title>
+<title>tilt-ninja — controller (Stage 2b)</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -16,7 +16,6 @@
     overscroll-behavior: none;
     -webkit-user-select: none; user-select: none;
   }
-  #stage { position: fixed; inset: 0; display: block; }
 
   #startOverlay {
     position: fixed; inset: 0;
@@ -52,7 +51,7 @@
 
   #debug {
     position: fixed; top: 8px; left: 8px;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.6;
     color: #9c9;
     background: rgba(0,0,0,0.55);
@@ -71,11 +70,7 @@
   }
   #controls.on { display: block; }
   .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-  .row label { width: 92px; font-size: 12px; color: #ccc; flex: none; }
-  .row input[type=range] { flex: 1; height: 28px; }
-  .row label.cb { width: auto; display: flex; align-items: center; gap: 6px; margin-right: 18px; }
-  .row input[type=checkbox] { width: 22px; height: 22px; }
-  .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
+  .row label { width: 52px; font-size: 12px; color: #ccc; flex: none; }
   .row input[type=text] {
     flex: 1; min-width: 0;
     font: inherit; font-size: 13px;
@@ -92,20 +87,21 @@
     flex: none;
   }
   #connectBtn:active { background: #333; }
-  .btnrow { display: flex; gap: 10px; }
-  #recenter, #resetPeak {
-    font: inherit; font-size: 14px;
-    padding: 10px 0;
-    flex: 1;
+
+  /* zona tap lebar — dipencet tanpa liat layar */
+  #captureBtn {
+    font: inherit; font-size: 28px;
+    width: 100%;
+    padding: 56px 0;
+    margin-top: 12px;
     background: #222; color: #fff;
-    border: 1px solid #666;
+    border: 2px solid #666;
     cursor: pointer;
   }
-  #recenter:active, #resetPeak:active { background: #333; }
+  #captureBtn:active { background: #444; }
 </style>
 </head>
 <body>
-<canvas id="stage"></canvas>
 
 <div id="debug">waiting…</div>
 
@@ -119,84 +115,28 @@
     <input id="roomCode" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="btnrow" style="margin-top:8px">
-    <button id="recenter">RECENTER</button>
-    <button id="resetPeak">RESET PEAK</button>
-  </div>
-  <div class="row">
-    <label for="sensX">sensX (px/°)</label>
-    <input id="sensX" type="range" min="1" max="30" step="0.5" value="8">
-    <span class="val" id="sensXVal">8.0</span>
-  </div>
-  <div class="row">
-    <label for="sensY">sensY (px/°)</label>
-    <input id="sensY" type="range" min="1" max="30" step="0.5" value="8">
-    <span class="val" id="sensYVal">8.0</span>
-  </div>
-  <div class="row">
-    <label for="alpha">smooth α</label>
-    <input id="alpha" type="range" min="0.05" max="1" step="0.05" value="0.3">
-    <span class="val" id="alphaVal">0.30</span>
-  </div>
-  <div class="row">
-    <label>invert</label>
-    <label class="cb"><input id="invX" type="checkbox"> X</label>
-    <label class="cb"><input id="invY" type="checkbox"> Y</label>
-  </div>
+  <button id="captureBtn">CAPTURE</button>
 </div>
 
 <div id="warn">No orientation data — pastikan HTTPS/secure context (Android Chrome butuh HTTPS buat DeviceOrientation).</div>
 
 <div id="startOverlay">
   <button id="startBtn">TAP TO START</button>
-  <div id="startHint">Pegang HP portrait kayak pedang, arahkan ke posisi netral, lalu tap.
-Posisi saat tap = titik tengah (kalibrasi origin).</div>
+  <div id="startHint">Controller = sensor murni. Pointer, kalibrasi, dan mapping semua di layar besar.
+Tap untuk mulai kirim orientasi.</div>
 </div>
 
 <script>
 (function () {
   'use strict';
 
-  var canvas = document.getElementById('stage');
-  var ctx = canvas.getContext('2d');
   var debugEl = document.getElementById('debug');
   var warnEl = document.getElementById('warn');
   var overlay = document.getElementById('startOverlay');
   var controls = document.getElementById('controls');
 
-  var W = 0, H = 0, dpr = 1;
-  function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
-    canvas.width = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-  window.addEventListener('resize', resize);
-  resize();
-
-  // --- tuning (live via slider) ---
-  var sensX = 8, sensY = 8, alpha = 0.3;
-  function bindSlider(id, valId, fmt, set) {
-    var el = document.getElementById(id);
-    var valEl = document.getElementById(valId);
-    function apply() {
-      var v = parseFloat(el.value);
-      set(v);
-      valEl.textContent = fmt(v);
-    }
-    el.addEventListener('input', apply);
-    apply();
-  }
-  bindSlider('sensX', 'sensXVal', function (v) { return v.toFixed(1); }, function (v) { sensX = v; });
-  bindSlider('sensY', 'sensYVal', function (v) { return v.toFixed(1); }, function (v) { sensY = v; });
-  bindSlider('alpha', 'alphaVal', function (v) { return v.toFixed(2); }, function (v) { alpha = v; });
-
-  // --- quaternion math (W3C Z-X'-Y'' intrinsic: x=beta, y=gamma, z=alpha) ---
-  var D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  // --- quaternion dari Euler W3C Z-X'-Y'' intrinsic: x=beta, y=gamma, z=alpha ---
+  var D2R = Math.PI / 180;
   function eulerToQuat(alphaDeg, betaDeg, gammaDeg) {
     var x = betaDeg * D2R / 2, y = gammaDeg * D2R / 2, z = alphaDeg * D2R / 2;
     var cX = Math.cos(x), cY = Math.cos(y), cZ = Math.cos(z);
@@ -208,47 +148,56 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
       z: cX * cY * sZ + sX * sY * cZ
     };
   }
-  function quatConj(q) { return { w: q.w, x: -q.x, y: -q.y, z: -q.z }; }
-  function quatMul(a, b) {
-    return {
-      w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-      x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-      y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-      z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w
-    };
-  }
-  // rotasi vektor [0,1,0] (sumbu +Y device = ujung atas HP = ujung pointer) oleh q
-  function rotateDeviceY(q) {
-    return {
-      x: 2 * (q.x * q.y - q.w * q.z),
-      y: q.w * q.w - q.x * q.x + q.y * q.y - q.z * q.z,
-      z: 2 * (q.y * q.z + q.w * q.x)
-    };
-  }
 
   // --- orientation state ---
   var started = false;
-  var hasOrigin = false;
-  var q0 = { w: 1, x: 0, y: 0, z: 0 };            // calibration origin (quaternion)
-  var rawAlpha = 0, rawBeta = 0, rawGamma = 0;    // latest raw reading
+  var rawAlpha = 0, rawBeta = 0, rawGamma = 0;
   var haveData = false;
   var evName = 'deviceorientation';
-  var invX = 1, invY = 1;
-  document.getElementById('invX').addEventListener('change', function () { invX = this.checked ? -1 : 1; });
-  document.getElementById('invY').addEventListener('change', function () { invY = this.checked ? -1 : 1; });
-  var sx = -1, sy = -1;            // smoothed blade position (EMA)
 
-  // --- pointer speed (dari posisi ter-smooth, bukan sensor baru) ---
-  var prevSx = -1, prevSy = -1, prevT = 0;
-  var speed = 0;                   // px/s
-  var peak = 0, peakT = 0;         // peak-hold
-  var PEAK_HOLD_MS = 1500;
+  // ring buffer quaternion ~300ms terakhir (anti-jostle buat CAPTURE)
+  var ringBuf = [];
+  var RING_MS = 400, CAPTURE_WINDOW_MS = 300;
 
   // Hz counter
   var evCount = 0, hz = 0, hzT0 = 0;
 
-  // --- net (Stage 2a): kirim quaternion MENTAH ke relay. controller = sensor bodoh,
-  // nol kalibrasi/mapping di sini — semua origin/mapping di display. ---
+  function onOrientation(e) {
+    if (e.beta === null || e.gamma === null) return;
+    rawAlpha = e.alpha === null ? 0 : e.alpha;
+    rawBeta = e.beta;
+    rawGamma = e.gamma;
+    haveData = true;
+
+    var now = performance.now();
+    ringBuf.push({ ts: now, q: eulerToQuat(rawAlpha, rawBeta, rawGamma) });
+    while (ringBuf.length && now - ringBuf[0].ts > RING_MS) ringBuf.shift();
+
+    evCount++;
+    if (hzT0 === 0) hzT0 = now;
+    if (now - hzT0 >= 1000) {
+      hz = Math.round(evCount * 1000 / (now - hzT0));
+      evCount = 0;
+      hzT0 = now;
+    }
+  }
+
+  // rata-rata quaternion: align hemisphere ke sampel pertama, rata-rata komponen,
+  // normalisasi. Valid karena sudut antar sampel berdekatan (~300ms diam).
+  function averageQuat(samples) {
+    var ref = samples[0].q;
+    var sw = 0, sx = 0, sy = 0, sz = 0, i, q, s;
+    for (i = 0; i < samples.length; i++) {
+      q = samples[i].q;
+      s = (q.w * ref.w + q.x * ref.x + q.y * ref.y + q.z * ref.z) < 0 ? -1 : 1;
+      sw += s * q.w; sx += s * q.x; sy += s * q.y; sz += s * q.z;
+    }
+    var n = Math.sqrt(sw * sw + sx * sx + sy * sy + sz * sz);
+    if (n < 1e-9) return null;
+    return [sw / n, sx / n, sy / n, sz / n];
+  }
+
+  // --- net: controller = sensor bodoh, cuma stream quaternion mentah ---
   var ws = null, wsState = 'idle', wantConnect = false;
   var seq = 0, lastSend = 0;
   var SEND_MIN_MS = 1000 / 60;
@@ -300,38 +249,27 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
   }
   document.getElementById('connectBtn').addEventListener('click', connect);
 
-  function onOrientation(e) {
-    if (e.beta === null || e.gamma === null) return;
-    rawAlpha = e.alpha === null ? 0 : e.alpha;
-    rawBeta = e.beta;
-    rawGamma = e.gamma;
-    haveData = true;
-    if (!hasOrigin) {
-      q0 = eulerToQuat(rawAlpha, rawBeta, rawGamma);
-      hasOrigin = true;
+  // CAPTURE: pointerdown (bukan click) = timing paling awal, sebelum goyangan tap
+  // merambat. Kirim rata-rata buffer SEBELUM tap, bukan quaternion saat tap.
+  var lastCapInfo = '';
+  document.getElementById('captureBtn').addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    var tap = performance.now();
+    var samples = [];
+    for (var i = 0; i < ringBuf.length; i++) {
+      if (tap - ringBuf[i].ts <= CAPTURE_WINDOW_MS) samples.push(ringBuf[i]);
     }
-    evCount++;
-    var now = performance.now();
-    if (hzT0 === 0) hzT0 = now;
-    if (now - hzT0 >= 1000) {
-      hz = Math.round(evCount * 1000 / (now - hzT0));
-      evCount = 0;
-      hzT0 = now;
+    if (!samples.length) { lastCapInfo = 'cap: no data'; return; }
+    var qa = averageQuat(samples);
+    if (!qa) { lastCapInfo = 'cap: avg fail'; return; }
+    if (ws && wsState === 'open') {
+      try {
+        ws.send(JSON.stringify({ btn: 'capture', q: qa }));
+        lastCapInfo = 'cap sent (' + samples.length + ' smp)';
+      } catch (err) { lastCapInfo = 'cap: send fail'; }
+    } else {
+      lastCapInfo = 'cap: not connected';
     }
-  }
-
-  function recenter() {
-    if (haveData) {
-      q0 = eulerToQuat(rawAlpha, rawBeta, rawGamma);
-      sx = W / 2;
-      sy = H / 2;
-    }
-  }
-  document.getElementById('recenter').addEventListener('click', recenter);
-
-  document.getElementById('resetPeak').addEventListener('click', function () {
-    peak = 0;
-    peakT = performance.now();
   });
 
   document.getElementById('startBtn').addEventListener('click', function () {
@@ -348,86 +286,34 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
     }, 2000);
   });
 
-  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
-
-  // --- render loop ---
-  function draw() {
-    requestAnimationFrame(draw);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(0, 0, W, H);
-
+  // --- loop kirim: rAF throttle 60/s. Nol render. Debug DOM maks 5x/detik. ---
+  var lastDebug = 0;
+  function loop() {
+    requestAnimationFrame(loop);
     if (!started) return;
+    var now = performance.now();
 
-    var q = eulerToQuat(rawAlpha, rawBeta, rawGamma);
-    var qRel = quatMul(quatConj(q0), q);
-    var v = rotateDeviceY(qRel);
-    var yaw = Math.atan2(v.x, v.y);
-    var pitch = Math.atan2(v.z, Math.sqrt(v.x * v.x + v.y * v.y));
-    var tx = clamp(W / 2 + yaw * R2D * sensX * invX, 0, W);
-    var ty = clamp(H / 2 + pitch * R2D * sensY * invY, 0, H);
-
-    if (sx < 0) { sx = tx; sy = ty; }
-    sx += alpha * (tx - sx);
-    sy += alpha * (ty - sy);
-
-    var nowT = performance.now();
-    if (prevT > 0 && prevSx >= 0) {
-      var dt = (nowT - prevT) / 1000;
-      if (dt > 0) {
-        var dx = sx - prevSx, dy = sy - prevSy;
-        speed = Math.sqrt(dx * dx + dy * dy) / dt;
-      }
-      if (speed >= peak || nowT - peakT > PEAK_HOLD_MS) {
-        peak = speed;
-        peakT = nowT;
-      }
-    }
-    prevSx = sx; prevSy = sy; prevT = nowT;
-
-    // kirim quaternion mentah (bukan qRel) — throttle max 60/s
-    if (ws && wsState === 'open' && haveData && nowT - lastSend >= SEND_MIN_MS) {
-      lastSend = nowT;
+    if (ws && wsState === 'open' && haveData && now - lastSend >= SEND_MIN_MS) {
+      lastSend = now;
       seq++;
+      var q = eulerToQuat(rawAlpha, rawBeta, rawGamma);
       try {
-        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: nowT }));
+        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: now }));
       } catch (e) {}
     }
 
-    if (haveData) {
-      warnEl.style.display = 'none';
-      // center marker
-      ctx.strokeStyle = '#444';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(W / 2 - 10, H / 2); ctx.lineTo(W / 2 + 10, H / 2);
-      ctx.moveTo(W / 2, H / 2 - 10); ctx.lineTo(W / 2, H / 2 + 10);
-      ctx.stroke();
-
-      // blade crosshair
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
-      ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(sx, sy, 7, 0, Math.PI * 2);
-      ctx.fillStyle = '#0f0';
-      ctx.fill();
+    if (now - lastDebug >= 200) {
+      lastDebug = now;
+      if (haveData) warnEl.style.display = 'none';
+      debugEl.textContent =
+        'src   ' + evName + (haveData ? '' : '  (no data)') + '\n' +
+        'rate  ' + hz + ' Hz\n' +
+        'net   ' + wsState + (rtt < 0 ? '' :
+          '  rtt ' + rtt.toFixed(0) + 'ms  avg ' + rttAvg.toFixed(0) + '  peak ' + rttPeak.toFixed(0)) + '\n' +
+        (lastCapInfo ? lastCapInfo : '');
     }
-
-    debugEl.textContent =
-      'src   ' + evName + (haveData ? '' : '  (no data)') + '\n' +
-      'qRel  w ' + qRel.w.toFixed(3) + '  x ' + qRel.x.toFixed(3) + '  y ' + qRel.y.toFixed(3) + '  z ' + qRel.z.toFixed(3) + '\n' +
-      'fwd   x ' + v.x.toFixed(2) + '  y ' + v.y.toFixed(2) + '  z ' + v.z.toFixed(2) + '\n' +
-      'aim   yaw ' + (yaw * R2D).toFixed(1) + '  pitch ' + (pitch * R2D).toFixed(1) + ' (deg)\n' +
-      'pos   x ' + sx.toFixed(0) + '  y ' + sy.toFixed(0) + '\n' +
-      'spd   ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '\n' +
-      'rate  ' + hz + ' Hz\n' +
-      'net   ' + wsState + (rtt < 0 ? '' :
-        '  rtt ' + rtt.toFixed(0) + 'ms  avg ' + rttAvg.toFixed(0) + '  peak ' + rttPeak.toFixed(0));
   }
-  requestAnimationFrame(draw);
+  requestAnimationFrame(loop);
 })();
 </script>
 </body>
