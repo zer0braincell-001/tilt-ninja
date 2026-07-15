@@ -75,7 +75,21 @@
     z-index: 10;
     display: none;
   }
-  #controls.on { display: block; }
+  /* panel tampil kalau connected (.on) DAN dibuka user (.open) */
+  #controls.on.open { display: block; }
+
+  #gear {
+    position: fixed; right: 10px; bottom: 10px;
+    width: 40px; height: 40px;
+    z-index: 12;                    /* di atas #controls (10) */
+    background: rgba(0,0,0,0.4);
+    color: #ccc;
+    border: 1px solid #555;
+    font: inherit; font-size: 20px; line-height: 1;
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  #gear:active { background: #333; }
   .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
   .row label { width: 92px; font-size: 12px; color: #ccc; flex: none; }
   .row input[type=range] { flex: 1; height: 22px; }
@@ -195,6 +209,8 @@
   </div>
 </div>
 
+<button id="gear" title="setting (S)">&#9881;</button>
+
 <div id="overlay">
   <div class="box">
     <label for="relayUrl">relay</label>
@@ -205,7 +221,7 @@
     <input id="room" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis).</div>
+  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis). S / tombol &#9881; = buka-tutup panel setting.</div>
 </div>
 
 <script>
@@ -250,6 +266,23 @@
     if (typeof relSaved.pull === 'number') document.getElementById('pull').value = relSaved.pull;
     if (typeof relSaved.autoGain === 'boolean') document.getElementById('autoGain').checked = relSaved.autoGain;
   }
+
+  // panel setting bisa ditutup — default TERTUTUP (panel nutupin buah di bawah
+  // layar; angka final sudah ketemu, setting jarang disentuh). Debug kiri-atas tetap.
+  var controlsOpen = false;
+  if (relSaved && typeof relSaved.panel === 'boolean') controlsOpen = relSaved.panel;
+  var gearBtn = document.getElementById('gear');
+  function applyPanel() {
+    if (controlsOpen) controls.classList.add('open');
+    else controls.classList.remove('open');
+  }
+  function togglePanel() {
+    controlsOpen = !controlsOpen;
+    applyPanel();
+    saveRel();
+  }
+  gearBtn.addEventListener('click', togglePanel);
+  applyPanel();
   function bindSlider(id, valId, fmt, set) {
     var el = document.getElementById(id);
     var valEl = document.getElementById(valId);
@@ -465,7 +498,8 @@
     try {
       localStorage.setItem(REL_KEY, JSON.stringify({
         mode: mode, autoGain: autoGainEl.checked,
-        sweep: sweepDeg, relGain: relGain, dead: relDeadzone, pull: centerPull
+        sweep: sweepDeg, relGain: relGain, dead: relDeadzone, pull: centerPull,
+        panel: controlsOpen
       }));
     } catch (e) {}
   }
@@ -863,6 +897,7 @@
   window.addEventListener('keydown', function (e) {
     if (e.key === 'r' || e.key === 'R') recenter();
     if ((e.key === 'm' || e.key === 'M') && calibStep < 0) cycleMode();
+    if (e.key === 's' || e.key === 'S') togglePanel();
   });
 
   function drawCalibTarget() {
