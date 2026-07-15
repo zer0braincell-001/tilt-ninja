@@ -73,6 +73,8 @@
   .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
   .row label { width: 92px; font-size: 12px; color: #ccc; flex: none; }
   .row input[type=range] { flex: 1; height: 28px; }
+  .row label.cb { width: auto; display: flex; align-items: center; gap: 6px; margin-right: 18px; }
+  .row input[type=checkbox] { width: 22px; height: 22px; }
   .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
   .btnrow { display: flex; gap: 10px; }
   #recenter, #resetPeak {
@@ -110,6 +112,11 @@
     <label for="alpha">smooth α</label>
     <input id="alpha" type="range" min="0.05" max="1" step="0.05" value="0.3">
     <span class="val" id="alphaVal">0.30</span>
+  </div>
+  <div class="row">
+    <label>invert</label>
+    <label class="cb"><input id="invX" type="checkbox"> X</label>
+    <label class="cb"><input id="invY" type="checkbox"> Y</label>
   </div>
 </div>
 
@@ -163,12 +170,47 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
   bindSlider('sensY', 'sensYVal', function (v) { return v.toFixed(1); }, function (v) { sensY = v; });
   bindSlider('alpha', 'alphaVal', function (v) { return v.toFixed(2); }, function (v) { alpha = v; });
 
+  // --- quaternion math (W3C Z-X'-Y'' intrinsic: x=beta, y=gamma, z=alpha) ---
+  var D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  function eulerToQuat(alphaDeg, betaDeg, gammaDeg) {
+    var x = betaDeg * D2R / 2, y = gammaDeg * D2R / 2, z = alphaDeg * D2R / 2;
+    var cX = Math.cos(x), cY = Math.cos(y), cZ = Math.cos(z);
+    var sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+    return {
+      w: cX * cY * cZ - sX * sY * sZ,
+      x: sX * cY * cZ - cX * sY * sZ,
+      y: cX * sY * cZ + sX * cY * sZ,
+      z: cX * cY * sZ + sX * sY * cZ
+    };
+  }
+  function quatConj(q) { return { w: q.w, x: -q.x, y: -q.y, z: -q.z }; }
+  function quatMul(a, b) {
+    return {
+      w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+      x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w
+    };
+  }
+  // rotasi vektor [0,1,0] (sumbu +Y device = ujung atas HP = ujung pointer) oleh q
+  function rotateDeviceY(q) {
+    return {
+      x: 2 * (q.x * q.y - q.w * q.z),
+      y: q.w * q.w - q.x * q.x + q.y * q.y - q.z * q.z,
+      z: 2 * (q.y * q.z + q.w * q.x)
+    };
+  }
+
   // --- orientation state ---
   var started = false;
   var hasOrigin = false;
-  var beta0 = 0, gamma0 = 0;       // calibration origin
-  var rawBeta = 0, rawGamma = 0;   // latest raw reading
+  var q0 = { w: 1, x: 0, y: 0, z: 0 };            // calibration origin (quaternion)
+  var rawAlpha = 0, rawBeta = 0, rawGamma = 0;    // latest raw reading
   var haveData = false;
+  var evName = 'deviceorientation';
+  var invX = 1, invY = 1;
+  document.getElementById('invX').addEventListener('change', function () { invX = this.checked ? -1 : 1; });
+  document.getElementById('invY').addEventListener('change', function () { invY = this.checked ? -1 : 1; });
   var sx = -1, sy = -1;            // smoothed blade position (EMA)
 
   // --- pointer speed (dari posisi ter-smooth, bukan sensor baru) ---
@@ -182,12 +224,12 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
 
   function onOrientation(e) {
     if (e.beta === null || e.gamma === null) return;
+    rawAlpha = e.alpha === null ? 0 : e.alpha;
     rawBeta = e.beta;
     rawGamma = e.gamma;
     haveData = true;
     if (!hasOrigin) {
-      beta0 = rawBeta;
-      gamma0 = rawGamma;
+      q0 = eulerToQuat(rawAlpha, rawBeta, rawGamma);
       hasOrigin = true;
     }
     evCount++;
@@ -202,8 +244,7 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
 
   function recenter() {
     if (haveData) {
-      beta0 = rawBeta;
-      gamma0 = rawGamma;
+      q0 = eulerToQuat(rawAlpha, rawBeta, rawGamma);
       sx = W / 2;
       sy = H / 2;
     }
@@ -219,7 +260,8 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
     started = true;
     overlay.style.display = 'none';
     controls.classList.add('on');
-    window.addEventListener('deviceorientation', onOrientation);
+    evName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
+    window.addEventListener(evName, onOrientation);
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch(function () {});
     }
@@ -238,10 +280,13 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
 
     if (!started) return;
 
-    var dB = rawBeta - beta0;
-    var dG = rawGamma - gamma0;
-    var tx = clamp(W / 2 + dG * sensX, 0, W);
-    var ty = clamp(H / 2 + dB * sensY, 0, H);
+    var q = eulerToQuat(rawAlpha, rawBeta, rawGamma);
+    var qRel = quatMul(quatConj(q0), q);
+    var v = rotateDeviceY(qRel);
+    var yaw = Math.atan2(v.x, v.y);
+    var pitch = Math.atan2(v.z, Math.sqrt(v.x * v.x + v.y * v.y));
+    var tx = clamp(W / 2 + yaw * R2D * sensX * invX, 0, W);
+    var ty = clamp(H / 2 + pitch * R2D * sensY * invY, 0, H);
 
     if (sx < 0) { sx = tx; sy = ty; }
     sx += alpha * (tx - sx);
@@ -285,11 +330,13 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
     }
 
     debugEl.textContent =
-      'raw   beta ' + rawBeta.toFixed(1) + '  gamma ' + rawGamma.toFixed(1) + '\n' +
-      'off   dB ' + dB.toFixed(1) + '  dG ' + dG.toFixed(1) + '\n' +
+      'src   ' + evName + (haveData ? '' : '  (no data)') + '\n' +
+      'qRel  w ' + qRel.w.toFixed(3) + '  x ' + qRel.x.toFixed(3) + '  y ' + qRel.y.toFixed(3) + '  z ' + qRel.z.toFixed(3) + '\n' +
+      'fwd   x ' + v.x.toFixed(2) + '  y ' + v.y.toFixed(2) + '  z ' + v.z.toFixed(2) + '\n' +
+      'aim   yaw ' + (yaw * R2D).toFixed(1) + '  pitch ' + (pitch * R2D).toFixed(1) + ' (deg)\n' +
       'pos   x ' + sx.toFixed(0) + '  y ' + sy.toFixed(0) + '\n' +
       'spd   ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '\n' +
-      'rate  ' + hz + ' Hz' + (haveData ? '' : '  (no data)');
+      'rate  ' + hz + ' Hz';
   }
   requestAnimationFrame(draw);
 })();
