@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>tilt-ninja — Stage 1: tilt aim test</title>
+<title>tilt-ninja — controller (Stage 2a)</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -76,6 +76,22 @@
   .row label.cb { width: auto; display: flex; align-items: center; gap: 6px; margin-right: 18px; }
   .row input[type=checkbox] { width: 22px; height: 22px; }
   .row .val { width: 46px; text-align: right; font-size: 12px; color: #9c9; flex: none; }
+  .row input[type=text] {
+    flex: 1; min-width: 0;
+    font: inherit; font-size: 13px;
+    padding: 6px 8px;
+    background: #000; color: #fff;
+    border: 1px solid #666;
+  }
+  #connectBtn {
+    font: inherit; font-size: 13px;
+    padding: 6px 14px;
+    background: #222; color: #fff;
+    border: 1px solid #666;
+    cursor: pointer;
+    flex: none;
+  }
+  #connectBtn:active { background: #333; }
   .btnrow { display: flex; gap: 10px; }
   #recenter, #resetPeak {
     font: inherit; font-size: 14px;
@@ -94,7 +110,16 @@
 <div id="debug">waiting…</div>
 
 <div id="controls">
-  <div class="btnrow">
+  <div class="row" style="margin-top:0">
+    <label for="relayUrl">relay</label>
+    <input id="relayUrl" type="text" value="https://tilt-ninja-relay.well65632.workers.dev">
+  </div>
+  <div class="row">
+    <label for="roomCode">room</label>
+    <input id="roomCode" type="text" value="1234">
+    <button id="connectBtn">CONNECT</button>
+  </div>
+  <div class="btnrow" style="margin-top:8px">
     <button id="recenter">RECENTER</button>
     <button id="resetPeak">RESET PEAK</button>
   </div>
@@ -222,6 +247,59 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
   // Hz counter
   var evCount = 0, hz = 0, hzT0 = 0;
 
+  // --- net (Stage 2a): kirim quaternion MENTAH ke relay. controller = sensor bodoh,
+  // nol kalibrasi/mapping di sini — semua origin/mapping di display. ---
+  var ws = null, wsState = 'idle', wantConnect = false;
+  var seq = 0, lastSend = 0;
+  var SEND_MIN_MS = 1000 / 60;
+  var rtt = -1, rttAvg = -1, rttPeak = 0;
+  var reconnectTimer = 0;
+
+  function wsUrl() {
+    var base = document.getElementById('relayUrl').value.trim().replace(/\/+$/, '');
+    base = base.replace(/^http/, 'ws'); // https -> wss
+    var room = document.getElementById('roomCode').value.trim() || '1234';
+    return base + '/ws?room=' + encodeURIComponent(room) + '&role=controller';
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 1000);
+  }
+
+  function connect() {
+    wantConnect = true;
+    if (ws) {
+      ws.onclose = null;
+      try { ws.close(); } catch (e) {}
+      ws = null;
+    }
+    wsState = 'connecting';
+    try {
+      ws = new WebSocket(wsUrl());
+    } catch (e) {
+      wsState = 'error';
+      scheduleReconnect();
+      return;
+    }
+    ws.onopen = function () { wsState = 'open'; };
+    ws.onclose = function () {
+      wsState = 'closed';
+      ws = null;
+      if (wantConnect) scheduleReconnect();
+    };
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m && m.ack !== undefined && typeof m.ts === 'number') {
+        rtt = performance.now() - m.ts;
+        rttAvg = rttAvg < 0 ? rtt : rttAvg + 0.1 * (rtt - rttAvg);
+        if (rtt > rttPeak) rttPeak = rtt;
+      }
+    };
+  }
+  document.getElementById('connectBtn').addEventListener('click', connect);
+
   function onOrientation(e) {
     if (e.beta === null || e.gamma === null) return;
     rawAlpha = e.alpha === null ? 0 : e.alpha;
@@ -306,6 +384,15 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
     }
     prevSx = sx; prevSy = sy; prevT = nowT;
 
+    // kirim quaternion mentah (bukan qRel) — throttle max 60/s
+    if (ws && wsState === 'open' && haveData && nowT - lastSend >= SEND_MIN_MS) {
+      lastSend = nowT;
+      seq++;
+      try {
+        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: nowT }));
+      } catch (e) {}
+    }
+
     if (haveData) {
       warnEl.style.display = 'none';
       // center marker
@@ -336,7 +423,9 @@ Posisi saat tap = titik tengah (kalibrasi origin).</div>
       'aim   yaw ' + (yaw * R2D).toFixed(1) + '  pitch ' + (pitch * R2D).toFixed(1) + ' (deg)\n' +
       'pos   x ' + sx.toFixed(0) + '  y ' + sy.toFixed(0) + '\n' +
       'spd   ' + speed.toFixed(0) + ' px/s  peak ' + peak.toFixed(0) + '\n' +
-      'rate  ' + hz + ' Hz';
+      'rate  ' + hz + ' Hz\n' +
+      'net   ' + wsState + (rtt < 0 ? '' :
+        '  rtt ' + rtt.toFixed(0) + 'ms  avg ' + rttAvg.toFixed(0) + '  peak ' + rttPeak.toFixed(0));
   }
   requestAnimationFrame(draw);
 })();
