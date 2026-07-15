@@ -1038,9 +1038,13 @@
       (calibStep < 0 && calibMsg ? '\nnote    ' + calibMsg : '');
   }
 
-  loadCalib();
+  loadCalib();                     // kalibrasi tersimpan tetap dimuat — dipakai kalau user pindah ke calibrated
   if (relSaved && (relSaved.mode === 'relative' || relSaved.mode === 'placeholder' || relSaved.mode === 'calibrated')) {
-    setMode(relSaved.mode);        // setMode jaga fallback kalau calibrated tanpa data
+    setMode(relSaved.mode);        // preferensi user tersimpan -> hormati (setMode jaga fallback)
+  } else {
+    // DEFAULT = RELATIVE (hardware-verified). Menimpa auto-switch loadCalib ke
+    // calibrated; kalibrasinya sendiri TIDAK dihapus.
+    setMode('relative');
   }
   updateGainUI();
   requestAnimationFrame(draw);
