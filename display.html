@@ -173,19 +173,24 @@
     <span class="val" id="thrVal">1200</span>
   </div>
   <div class="row">
+    <label for="bladeR">blade R px</label>
+    <input id="bladeR" type="range" min="0" max="80" step="1" value="25">
+    <span class="val" id="bladeRVal">25</span>
+  </div>
+  <div class="row">
     <label for="spawn">spawn /s</label>
     <input id="spawn" type="range" min="0.1" max="3" step="0.1" value="0.8">
     <span class="val" id="spawnVal">0.8</span>
   </div>
   <div class="row">
-    <label for="grav">gravity px/s²</label>
-    <input id="grav" type="range" min="200" max="3000" step="50" value="1200">
-    <span class="val" id="gravVal">1200</span>
+    <label for="appr">approach (s)</label>
+    <input id="appr" type="range" min="0.8" max="8" step="0.1" value="2.5">
+    <span class="val" id="apprVal">2.5</span>
   </div>
   <div class="row">
-    <label for="frad">radius px</label>
-    <input id="frad" type="range" min="15" max="90" step="5" value="45">
-    <span class="val" id="fradVal">45</span>
+    <label for="frad">max radius</label>
+    <input id="frad" type="range" min="30" max="200" step="5" value="90">
+    <span class="val" id="fradVal">90</span>
   </div>
   <div class="row">
     <label for="sensX">sensX (px/°)</label>
@@ -252,7 +257,7 @@
 
   // --- tuning ---
   var sensX = 12, sensY = 12, alpha = 0.3;
-  var sliceThr = 1200, spawnRate = 0.8, grav = 1200, fruitR = 45;
+  var sliceThr = 1200, spawnRate = 0.8, approachT = 2.5, maxR = 90, bladeR = 25;
   var sweepDeg = 35, relGain = 12, relDeadzone = 0.3, centerPull = 0;
 
   // restore preferensi relative + mode SEBELUM slider di-bind (bind baca value elemen)
@@ -298,9 +303,10 @@
   bindSlider('sensY', 'sensYVal', function (v) { return v.toFixed(1); }, function (v) { sensY = v; });
   bindSlider('alpha', 'alphaVal', function (v) { return v.toFixed(2); }, function (v) { alpha = v; });
   bindSlider('thr', 'thrVal', function (v) { return v.toFixed(0); }, function (v) { sliceThr = v; });
+  bindSlider('bladeR', 'bladeRVal', function (v) { return v.toFixed(0); }, function (v) { bladeR = v; });
   bindSlider('spawn', 'spawnVal', function (v) { return v.toFixed(1); }, function (v) { spawnRate = v; });
-  bindSlider('grav', 'gravVal', function (v) { return v.toFixed(0); }, function (v) { grav = v; });
-  bindSlider('frad', 'fradVal', function (v) { return v.toFixed(0); }, function (v) { fruitR = v; });
+  bindSlider('appr', 'apprVal', function (v) { return v.toFixed(1); }, function (v) { approachT = v; });
+  bindSlider('frad', 'fradVal', function (v) { return v.toFixed(0); }, function (v) { maxR = v; });
   bindSlider('sweep', 'sweepVal', function (v) { return v.toFixed(0); }, function (v) { sweepDeg = v; if (autoGainEl) updateGainUI(); });
   bindSlider('relGain', 'relGainVal', function (v) { return v.toFixed(1); }, function (v) { relGain = v; });
   bindSlider('dead', 'deadVal', function (v) { return v.toFixed(1); }, function (v) { relDeadzone = v; });
@@ -671,27 +677,50 @@
 
   // --- game state (Stage 3a) ---
   var score = 0, missCount = 0;
-  var fruits = [], parts = [], trail = [];
+  var meteors = [], parts = [], trail = [];
   var spawnAcc = 0;
-  var FRUIT_COLORS = ['#e43', '#3c5', '#fa0', '#3af', '#e5e', '#fe3'];
+  var METEOR_TONES = ['#9a8878', '#8a7263', '#7d7d82', '#a08a70', '#6f6a66'];
   var GRAY_FLASH_MS = 220;
+  var IMPACT_FLASH_MS = 250;
+  var impactFlashUntil = 0;
 
-  function spawnFruit() {
-    var r = fruitR;
-    var x = W * (0.15 + 0.7 * Math.random());
-    var y = H + r;
-    // puncak parabola di paruh atas layar: tinggi naik = (H+r) - apexY
-    var apexY = H * (0.10 + 0.35 * Math.random());
-    var vy = -Math.sqrt(2 * grav * (y - apexY));
-    var vx = (Math.random() * 2 - 1) * W * 0.12;
-    fruits.push({
-      x: x, y: y, vx: vx, vy: vy, r: r,
-      color: FRUIT_COLORS[(Math.random() * FRUIT_COLORS.length) | 0],
+  // bintang statis, koordinat normalized -> tahan resize tanpa regenerate.
+  // 3 lapis kecerahan, digambar per lapis (1x fillStyle per lapis, murah).
+  var STARS = [];
+  (function () {
+    for (var i = 0; i < 140; i++) STARS.push({ x: Math.random(), y: Math.random(), l: i % 3 });
+  })();
+  var STAR_LAYERS = [
+    { a: 'rgba(255,255,255,0.25)', s: 1 },
+    { a: 'rgba(255,255,255,0.5)', s: 1 },
+    { a: 'rgba(255,255,255,0.9)', s: 2 }
+  ];
+  function drawStars() {
+    for (var l = 0; l < 3; l++) {
+      ctx.fillStyle = STAR_LAYERS[l].a;
+      var sz = STAR_LAYERS[l].s;
+      for (var i = l; i < STARS.length; i += 3) {
+        ctx.fillRect(STARS[i].x * W, STARS[i].y * H, sz, sz);
+      }
+    }
+  }
+
+  // METEOR MENDEKAT: spawn kecil di posisi acak (sebar seluruh layar), membesar
+  // sampai maxR = impact (MISS + flash tepi; TIDAK ada HP/kalah). Posisi dihitung
+  // dari progress k (bukan integrasi) -> drift pelan menjauh dari tengah, deterministik.
+  function spawnMeteor() {
+    var dx0 = W * (0.84 * Math.random() - 0.42);   // margin 8% dari tepi
+    var dy0 = H * (0.84 * Math.random() - 0.42);
+    meteors.push({
+      t: 0, mR: maxR, dx0: dx0, dy0: dy0,
+      x: W / 2 + dx0, y: H / 2 + dy0, r: maxR * 0.08,
+      color: METEOR_TONES[(Math.random() * METEOR_TONES.length) | 0],
+      seed: Math.random() * 997,
       grayUntil: 0
     });
   }
 
-  function burstFruit(f) {
+  function burstMeteor(f) {
     var i, a, sp;
     for (i = 0; i < 8; i++) {
       a = Math.random() * Math.PI * 2;
@@ -707,27 +736,35 @@
 
   // update + deteksi slice per frame. Segmen = posisi ter-smooth frame lalu -> sekarang
   // (yang dilihat = yang motong). Titik doang bakal tunneling di 34Hz.
+  // Deteksi TIDAK berubah dari gate: distPointSeg + gating speed. Satu-satunya
+  // tambahan = bladeR (tebal bilah, tuas pemaaf BIDIKAN — bukan pemaaf kecepatan).
   function updateGame(dt, segAx, segAy, segBx, segBy, segValid, now) {
     spawnAcc += spawnRate * dt;
-    while (spawnAcc >= 1) { spawnAcc -= 1; spawnFruit(); }
+    while (spawnAcc >= 1) { spawnAcc -= 1; spawnMeteor(); }
 
     var i, f;
-    for (i = fruits.length - 1; i >= 0; i--) {
-      f = fruits[i];
-      f.vy += grav * dt;
-      f.x += f.vx * dt;
-      f.y += f.vy * dt;
+    for (i = meteors.length - 1; i >= 0; i--) {
+      f = meteors[i];
+      f.t += dt;
+      var k = Math.min(f.t / Math.max(approachT, 0.1), 1);
+      // membesar makin cepat (kesan perspektif); HITBOX = radius visual saat itu
+      f.r = f.mR * (0.08 + 0.92 * k * k);
+      // drift pelan menjauh dari tengah seiring mendekat
+      var gf = 1 + 0.2 * k;
+      f.x = W / 2 + f.dx0 * gf;
+      f.y = H / 2 + f.dy0 * gf;
 
-      if (f.y - f.r > H && f.vy > 0) {         // lolos ke bawah tanpa dipotong
-        fruits.splice(i, 1);
+      if (k >= 1) {                            // sampai maxR tanpa dipotong = impact
+        meteors.splice(i, 1);
         missCount++;
+        impactFlashUntil = now + IMPACT_FLASH_MS;
         continue;
       }
 
-      if (segValid && distPointSeg(f.x, f.y, segAx, segAy, segBx, segBy) <= f.r) {
+      if (segValid && distPointSeg(f.x, f.y, segAx, segAy, segBx, segBy) <= f.r + bladeR) {
         if (speed >= sliceThr) {
-          burstFruit(f);
-          fruits.splice(i, 1);
+          burstMeteor(f);
+          meteors.splice(i, 1);
           score++;
         } else if (now >= f.grayUntil) {
           // kena TAPI kurang cepat -> flash abu-abu. Bedain "deteksi rusak" vs "kurang cepat".
@@ -742,18 +779,49 @@
       if (p.t >= p.life) { parts.splice(i, 1); continue; }
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      p.vy += grav * 0.5 * dt;
     }
   }
 
-  function drawGame(now) {
-    var i, f;
-    for (i = 0; i < fruits.length; i++) {
-      f = fruits[i];
-      ctx.fillStyle = now < f.grayUntil ? '#888' : f.color;
+  // meteor prosedural: batu + crater deterministik dari seed + glow tipis.
+  function frac(x) { return x - Math.floor(x); }
+  function drawMeteor(f, now) {
+    var r = f.r;
+    // glow tipis
+    ctx.fillStyle = 'rgba(255,160,80,0.10)';
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, r * 1.3, 0, Math.PI * 2);
+    ctx.fill();
+    // badan batu
+    ctx.fillStyle = now < f.grayUntil ? '#888' : f.color;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    // crater: posisi/ukuran stabil per meteor (dari seed), skala ikut r
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    for (var i = 0; i < 3; i++) {
+      var a = f.seed * 7.3 + i * 2.4;
+      var cr = r * (0.12 + 0.10 * frac(f.seed * (i + 3) * 1.7));
+      var cd = r * (0.25 + 0.35 * frac(f.seed * (i + 1) * 3.1));
       ctx.beginPath();
-      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.arc(f.x + Math.cos(a) * cd, f.y + Math.sin(a) * cd, cr, 0, Math.PI * 2);
       ctx.fill();
+    }
+    // bayangan rim bawah-kanan (kesan volume)
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = Math.max(2, r * 0.12);
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, r * 0.9, 0.2, 1.8);
+    ctx.stroke();
+  }
+
+  function drawGame(now) {
+    var i;
+    for (i = 0; i < meteors.length; i++) drawMeteor(meteors[i], now);
+    // impact: flash tepi layar singkat (meteor lolos = MISS, tanpa HP/kalah)
+    if (now < impactFlashUntil) {
+      ctx.strokeStyle = 'rgba(255,70,40,' + (0.5 * (impactFlashUntil - now) / IMPACT_FLASH_MS).toFixed(3) + ')';
+      ctx.lineWidth = 20;
+      ctx.strokeRect(10, 10, W - 20, H - 20);
     }
     for (i = 0; i < parts.length; i++) {
       var p = parts[i];
@@ -772,7 +840,7 @@
     var i;
     for (i = 1; i < trail.length; i++) {
       ctx.globalAlpha = i / trail.length;
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = '#6fd';
       ctx.lineWidth = 1 + 3 * (i / trail.length);
       ctx.beginPath();
       ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
@@ -782,11 +850,40 @@
     ctx.globalAlpha = 1;
   }
 
+  // BILAH ENERGI prosedural sepanjang segmen deteksi (yang dilihat = yang motong).
+  // Arah HANYA dari arah gerak — sistem roll-invariant, TIDAK tahu orientasi bilah.
+  // Tebal glow terluar = 2×bladeR -> pemain LIHAT jangkauan bilahnya, bukan nebak.
+  // Di bawah ambang slice bilah REDUP, di atas ambang MENYALA -> gating kelihatan.
+  var bladeDirX = 1, bladeDirY = 0;
+  function drawBlade(ax, ay, bx, by) {
+    var dx = bx - ax, dy = by - ay;
+    var segLen = Math.sqrt(dx * dx + dy * dy);
+    if (segLen > 2) { bladeDirX = dx / segLen; bladeDirY = dy / segLen; }
+    // panjang ikut kecepatan: cepat = memanjang, diam = memendek jadi inti kecil
+    var L = Math.max(segLen, 10 + Math.min(speed * 0.05, 190));
+    var ex = bx - bladeDirX * L, ey = by - bladeDirY * L;
+    var lit = speed >= sliceThr;
+    var passes = lit
+      ? [[bladeR * 2, 'rgba(60,255,220,0.14)'], [bladeR, 'rgba(90,255,230,0.22)'], [7, 'rgba(170,255,240,0.95)'], [2.5, '#fff']]
+      : [[bladeR * 2, 'rgba(60,255,220,0.05)'], [5, 'rgba(0,190,170,0.45)'], [2, 'rgba(190,255,245,0.55)']];
+    ctx.lineCap = 'round';
+    for (var i = 0; i < passes.length; i++) {
+      if (passes[i][0] < 1) continue;          // bladeR 0 -> lewati pass jangkauan
+      ctx.lineWidth = passes[i][0];
+      ctx.strokeStyle = passes[i][1];
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+  }
+
   function drawHUD() {
     ctx.fillStyle = '#fff';
     ctx.font = '20px ui-monospace, monospace';
     ctx.textAlign = 'right';
-    ctx.fillText('SKOR ' + score + '   MISS ' + missCount + '   BUAH ' + fruits.length, W - 16, 30);
+    ctx.fillText('SKOR ' + score + '   MISS ' + missCount + '   METEOR ' + meteors.length, W - 16, 30);
     ctx.textAlign = 'start';
   }
 
@@ -949,8 +1046,9 @@
   var lastFrameT = 0;
   function draw() {
     requestAnimationFrame(draw);
-    ctx.fillStyle = '#111';
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
+    drawStars();
 
     var now = performance.now();
     var dt = lastFrameT > 0 ? Math.min((now - lastFrameT) / 1000, 0.05) : 0;
@@ -1031,18 +1129,22 @@
         drawTrail();
       }
 
-      // --- pointer crosshair + dot (di atas buah) ---
+      // --- game ON: bilah energi; game OFF: crosshair debug (perilaku 2b persis) ---
       if (tx !== null) {
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
-        ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(sx, sy, 7, 0, Math.PI * 2);
-        ctx.fillStyle = '#0f0';
-        ctx.fill();
+        if (gameEl.checked) {
+          drawBlade(segAx, segAy, sx, sy);
+        } else {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(sx - 24, sy); ctx.lineTo(sx + 24, sy);
+          ctx.moveTo(sx, sy - 24); ctx.lineTo(sx, sy + 24);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+          ctx.fillStyle = '#0f0';
+          ctx.fill();
+        }
       }
 
       if (gameEl.checked) drawHUD();
