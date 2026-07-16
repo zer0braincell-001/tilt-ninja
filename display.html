@@ -141,6 +141,7 @@
     <label class="cb"><input id="game" type="checkbox"> GAME</label>
     <label class="cb"><input id="fx" type="checkbox" checked> FX</label>
     <label class="cb"><input id="stars" type="checkbox" checked> STARS</label>
+    <label class="cb"><input id="sfx" type="checkbox" checked> SFX</label>
   </div>
   <div class="row">
     <label>relative</label>
@@ -228,7 +229,7 @@
     <input id="room" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis). S / tombol &#9881; = buka-tutup panel setting.</div>
+  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis). S / tombol &#9881; = buka-tutup panel setting. N = mute/unmute SFX.</div>
 </div>
 
 <script>
@@ -347,6 +348,70 @@
   // nol efek ke hitbox/gating/posisi pointer. Buat A/B nunjuk biang jank di hardware.
   var fxEl = document.getElementById('fx');
   var starsEl = document.getElementById('stars');
+
+  // --- SFX: file asli via Web Audio, one-shot per trigger (numpuk kalau meteor
+  // kepotong barengan). Fetch/decode gagal -> suara ITU DOANG yang skip, jangan crash.
+  var sfxEl = document.getElementById('sfx');
+  var SFX_KEY = 'tiltNinjaSfx';
+  var sfxEnabled = true;
+  try {
+    var sfxSaved = localStorage.getItem(SFX_KEY);
+    if (sfxSaved !== null) sfxEnabled = JSON.parse(sfxSaved);
+  } catch (e) {}
+  sfxEl.checked = sfxEnabled;
+  var SFX_FILES = {
+    incoming: 'sfx/meteor-incoming.mp3',
+    slash: 'sfx/slash.mp3',
+    hit: 'sfx/meteor-hit.mp3',
+    crash: 'sfx/meteor-crash.mp3'
+  };
+  var audioCtx = null, masterGain = null, sfxBuffers = {};
+  (function initAudio() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;                    // browser tanpa Web Audio -> nol suara, nol crash
+    try {
+      audioCtx = new AC();
+      masterGain = audioCtx.createGain();
+      masterGain.connect(audioCtx.destination);
+    } catch (e) { audioCtx = null; return; }
+    Object.keys(SFX_FILES).forEach(function (key) {
+      fetch(SFX_FILES[key])
+        .then(function (r) { if (!r.ok) throw new Error('sfx fetch failed'); return r.arrayBuffer(); })
+        .then(function (buf) { return audioCtx.decodeAudioData(buf); })
+        .then(function (decoded) { sfxBuffers[key] = decoded; })
+        .catch(function () {});         // file hilang / fetch gagal -> skip suara ini doang
+    });
+  })();
+  // Browser blokir audio sampai ada gesture. Suara main di DISPLAY, tapi game
+  // digerakin dari HP -> display bisa nggak pernah dapat gesture sendiri. Resume
+  // di gesture pertama (pointerdown/keydown) DAN saat GAME dinyalakan.
+  function resumeAudio() {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
+  }
+  window.addEventListener('pointerdown', resumeAudio);
+  gameEl.addEventListener('change', function () { if (gameEl.checked) resumeAudio(); });
+  sfxEl.addEventListener('change', function () {
+    sfxEnabled = sfxEl.checked;
+    try { localStorage.setItem(SFX_KEY, JSON.stringify(sfxEnabled)); } catch (e) {}
+  });
+  function playSfx(key) {
+    // context masih suspended (belum ke-unlock) -> diam, BUKAN error.
+    if (!sfxEnabled || !audioCtx || audioCtx.state !== 'running' || !sfxBuffers[key]) return;
+    var src = audioCtx.createBufferSource();   // sekali pakai -> numpuk kalau banyak trigger barengan
+    src.buffer = sfxBuffers[key];
+    src.connect(masterGain);
+    src.start(0);
+  }
+  // slash = tiap kecepatan bilah lewat ambang gating (REUSE speed/sliceThr yang
+  // sudah dihitung buat slice, nol recompute). Throttle knob FEEL, bukan matematika
+  // gating — catatan tuning di STATE. Tanpa ini: ngayun terus = spam suara.
+  var SLASH_SFX_THROTTLE_MS = 120;
+  var lastSlashSfxT = -1e9;
+  function trySlashSfx(now) {
+    if (now - lastSlashSfxT < SLASH_SFX_THROTTLE_MS) return;
+    lastSlashSfxT = now;
+    playSfx('slash');
+  }
 
   // --- quaternion & vector math ---
   var R2D = 180 / Math.PI;
@@ -769,9 +834,11 @@
       seed: Math.random() * 997,
       grayUntil: 0
     });
+    playSfx('incoming');
   }
 
   function burstMeteor(f) {
+    playSfx('hit');
     if (parts.length + embers.length >= PART_MAX) return;
     var i, a, sp;
     var col = HEAT_CORE[heatIdx(f.r / f.mR)];   // pecahan sewarna panas meteor saat dipotong
@@ -826,6 +893,7 @@
         meteors.splice(i, 1);
         missCount++;
         impactFlashUntil = now + IMPACT_FLASH_MS;
+        playSfx('crash');
         continue;
       }
 
@@ -1086,6 +1154,7 @@
         if (dts > 0 && dts <= 0.2 && pktSx >= 0 && sx >= 0) {
           var sdx = sx - pktSx, sdy = sy - pktSy;
           speed = Math.sqrt(sdx * sdx + sdy * sdy) / dts;
+          if (speed >= sliceThr) trySlashSfx(now);
         }
         if (mode === 'relative') updateRelative(dts);
         lastSendTs = m.ts;
@@ -1120,6 +1189,12 @@
     if (e.key === 'r' || e.key === 'R') recenter();
     if ((e.key === 'm' || e.key === 'M') && calibStep < 0) cycleMode();
     if (e.key === 's' || e.key === 'S') togglePanel();
+    if (e.key === 'n' || e.key === 'N') {
+      sfxEnabled = !sfxEnabled;
+      sfxEl.checked = sfxEnabled;
+      try { localStorage.setItem(SFX_KEY, JSON.stringify(sfxEnabled)); } catch (err) {}
+    }
+    resumeAudio();
   });
 
   function drawCalibTarget() {
