@@ -361,7 +361,6 @@
   sfxEl.checked = sfxEnabled;
   var SFX_FILES = {
     incoming: 'sfx/meteor-incoming.mp3',
-    slash: 'sfx/slash.mp3',
     hit: 'sfx/meteor-hit.mp3',
     crash: 'sfx/meteor-crash.mp3'
   };
@@ -402,17 +401,6 @@
     src.connect(masterGain);
     src.start(0);
   }
-  // slash = tiap kecepatan bilah lewat ambang gating (REUSE speed/sliceThr yang
-  // sudah dihitung buat slice, nol recompute). Throttle knob FEEL, bukan matematika
-  // gating — catatan tuning di STATE. Tanpa ini: ngayun terus = spam suara.
-  var SLASH_SFX_THROTTLE_MS = 120;
-  var lastSlashSfxT = -1e9;
-  function trySlashSfx(now) {
-    if (now - lastSlashSfxT < SLASH_SFX_THROTTLE_MS) return;
-    lastSlashSfxT = now;
-    playSfx('slash');
-  }
-
   // --- quaternion & vector math ---
   var R2D = 180 / Math.PI;
   // rotasi vektor [0,1,0] (sumbu +Y device = ujung pointer) oleh quaternion ABSOLUT q
@@ -1154,7 +1142,6 @@
         if (dts > 0 && dts <= 0.2 && pktSx >= 0 && sx >= 0) {
           var sdx = sx - pktSx, sdy = sy - pktSy;
           speed = Math.sqrt(sdx * sdx + sdy * sdy) / dts;
-          if (speed >= sliceThr) trySlashSfx(now);
         }
         if (mode === 'relative') updateRelative(dts);
         lastSendTs = m.ts;
