@@ -99,6 +99,40 @@
     cursor: pointer;
   }
   #captureBtn:active { background: #444; }
+
+  /* layar pilihan perangkat (satu link buat HP & desktop) */
+  #chooser {
+    position: fixed; inset: 0;
+    background: #111;
+    display: none;                 /* JS yang nunjukin kalau belum ada pilihan */
+    flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px;
+    z-index: 40;                   /* di atas startOverlay (20) */
+  }
+  #chooser .title { font-size: 16px; color: #ccc; }
+  .devBtn {
+    font: inherit; font-size: 20px;
+    padding: 26px 0;
+    width: 78%; max-width: 420px;
+    background: #222; color: #fff;
+    border: 2px solid #666;
+    cursor: pointer;
+  }
+  .devBtn:active { background: #333; }
+  #chooser .hint { color: #999; font-size: 12px; max-width: 80%; text-align: center; line-height: 1.5; }
+
+  /* jalan keluar: reset pilihan perangkat — selalu kelihatan di controller */
+  #switchDevice {
+    position: fixed; top: 8px; right: 8px;
+    font: inherit; font-size: 11px;
+    padding: 5px 10px;
+    background: rgba(0,0,0,0.4); color: #999;
+    border: 1px solid #555;
+    cursor: pointer;
+    z-index: 30;                   /* di atas startOverlay, di bawah chooser */
+  }
+  #switchDevice:active { background: #333; }
 </style>
 </head>
 <body>
@@ -127,6 +161,16 @@
 Tap untuk mulai kirim orientasi.</div>
 </div>
 
+<button id="switchDevice">ganti perangkat</button>
+
+<div id="chooser">
+  <div class="title">BUKA DI PERANGKAT APA?</div>
+  <button class="devBtn" id="pickController">HP — CONTROLLER</button>
+  <button class="devBtn" id="pickDisplay">DESKTOP — LAYAR BESAR</button>
+  <div class="hint">Pilihan disimpan; kunjungan berikutnya langsung lompat.
+Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
+</div>
+
 <script>
 (function () {
   'use strict';
@@ -135,6 +179,33 @@ Tap untuk mulai kirim orientasi.</div>
   var warnEl = document.getElementById('warn');
   var overlay = document.getElementById('startOverlay');
   var controls = document.getElementById('controls');
+
+  // --- SATU LINK: pilihan HP / Desktop. display.html TIDAK diaduk (kode lulus gate) —
+  // desktop cuma di-redirect ke sana. Blok ini berdiri sendiri, nol sentuhan ke
+  // jalur sensor/quaternion/CONNECT/CAPTURE/MODE di bawah.
+  var ROLE_KEY = 'tiltNinjaRole';
+  var chooserEl = document.getElementById('chooser');
+  (function () {
+    // ?role=controller / ?role=display menang & TIDAK disimpan (buat testing cepat)
+    var m = /[?&]role=(controller|display)(&|$)/.exec(location.search);
+    var role = m ? m[1] : null;
+    if (!role) { try { role = localStorage.getItem(ROLE_KEY); } catch (e) {} }
+    if (role === 'display') { location.replace('display.html'); return; }   // path relatif: aman di subpath GitHub Pages
+    if (role !== 'controller') chooserEl.style.display = 'flex';            // belum milih -> tanya
+  })();
+  document.getElementById('pickController').addEventListener('click', function () {
+    try { localStorage.setItem(ROLE_KEY, 'controller'); } catch (e) {}
+    chooserEl.style.display = 'none';        // lanjut flow existing: TAP TO START dst
+  });
+  document.getElementById('pickDisplay').addEventListener('click', function () {
+    try { localStorage.setItem(ROLE_KEY, 'display'); } catch (e) {}
+    window.location.href = 'display.html';
+  });
+  // jalan keluar: reset pilihan, balik ke layar pilihan (buang query biar nggak auto-skip)
+  document.getElementById('switchDevice').addEventListener('click', function () {
+    try { localStorage.removeItem(ROLE_KEY); } catch (e) {}
+    location.href = location.pathname;
+  });
 
   // --- quaternion dari Euler W3C Z-X'-Y'' intrinsic: x=beta, y=gamma, z=alpha ---
   var D2R = Math.PI / 180;

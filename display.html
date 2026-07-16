@@ -139,6 +139,8 @@
     <label class="cb"><input type="radio" name="mapmode" id="mapRelative"> relative</label>
     <label class="cb" id="verifyLbl"><input id="verify" type="checkbox"> verify tepi</label>
     <label class="cb"><input id="game" type="checkbox"> GAME</label>
+    <label class="cb"><input id="fx" type="checkbox" checked> FX</label>
+    <label class="cb"><input id="stars" type="checkbox" checked> STARS</label>
   </div>
   <div class="row">
     <label>relative</label>
@@ -250,6 +252,7 @@
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    starCanvas = null;                // ukuran berubah -> starfield offscreen dibangun ulang
     if (autoGainEl) updateGainUI();   // auto gain = W/sweep -> tampilan ikut resize
   }
   window.addEventListener('resize', resize);
@@ -340,6 +343,10 @@
   document.getElementById('invX').addEventListener('change', function () { invX = this.checked ? -1 : 1; });
   document.getElementById('invY').addEventListener('change', function () { invY = this.checked ? -1 : 1; });
   var gameEl = document.getElementById('game');
+  // toggle isolasi performa: FX (ekor api/bara/glow/pulse) & STARS — visual MURNI,
+  // nol efek ke hitbox/gating/posisi pointer. Buat A/B nunjuk biang jank di hardware.
+  var fxEl = document.getElementById('fx');
+  var starsEl = document.getElementById('stars');
 
   // --- quaternion & vector math ---
   var R2D = 180 / Math.PI;
@@ -727,14 +734,27 @@
     { a: 'rgba(255,255,255,0.5)', s: 1 },
     { a: 'rgba(255,255,255,0.9)', s: 2 }
   ];
-  function drawStars() {
+  // Starfield di-render SEKALI ke offscreen canvas (lazy, di-invalidate resize) ->
+  // per frame cuma 1x drawImage. Versi lama gambar 140 fillRect per frame — ratusan
+  // path per frame lebih mahal dari semua meteor+ekor digabung; tersangka utama jank.
+  var starCanvas = null;
+  function buildStars() {
+    starCanvas = document.createElement('canvas');
+    starCanvas.width = Math.max(1, Math.round(W * dpr));
+    starCanvas.height = Math.max(1, Math.round(H * dpr));
+    var sctx = starCanvas.getContext('2d');
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     for (var l = 0; l < 3; l++) {
-      ctx.fillStyle = STAR_LAYERS[l].a;
+      sctx.fillStyle = STAR_LAYERS[l].a;
       var sz = STAR_LAYERS[l].s;
       for (var i = l; i < STARS.length; i += 3) {
-        ctx.fillRect(STARS[i].x * W, STARS[i].y * H, sz, sz);
+        sctx.fillRect(STARS[i].x * W, STARS[i].y * H, sz, sz);
       }
     }
+  }
+  function drawStars() {
+    if (!starCanvas) buildStars();
+    ctx.drawImage(starCanvas, 0, 0, W, H);
   }
 
   // METEOR MENDEKAT: spawn kecil di posisi acak (sebar seluruh layar), membesar
@@ -789,7 +809,7 @@
 
       // percikan bara lepas dari ekor (visual MURNI — nol efek ke hitbox/gating).
       // Laju spawn naik ikut kedekatan (~2-4 bara hidup per meteor); cap PART_MAX global.
-      if (parts.length + embers.length < PART_MAX && Math.random() < (2 + 7 * k) * dt) {
+      if (fxEl.checked && parts.length + embers.length < PART_MAX && Math.random() < (2 + 7 * k) * dt) {
         var tdx = W / 2 - f.x, tdy = H / 2 - f.y;
         var td = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
         var toff = f.r * (0.6 + Math.random() * (1 + 2.5 * k));
@@ -845,6 +865,15 @@
     var p = f.r / f.mR;
     if (p > 1) p = 1;
     var bi = heatIdx(p);
+    if (!fxEl.checked) {
+      // FX OFF (A/B isolasi): lingkaran polos. Warna panas TETAP — itu sinyal
+      // gameplay (telegraf sisa waktu), bukan efek.
+      ctx.fillStyle = now < f.grayUntil ? '#888' : HEAT_CORE[bi];
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
     // p>0.85: denyut urgensi ~3% — HANYA radius VISUAL. Hitbox tetap f.r (jangan diubah).
     var r = p > 0.85 ? f.r * (1 + 0.03 * Math.sin(now * 0.02 + f.seed)) : f.r;
 
@@ -1134,22 +1163,40 @@
 
   // --- render loop ---
   var lastFrameT = 0;
+  // instrumen RENDER: fps (rata-rata 1s) + ms/frame (rata-rata + peak 1.5s).
+  // msg Hz ngukur JARINGAN — render patah-patah cuma kelihatan di sini
+  // (render-bound = fps turun tapi msg Hz normal; network-bound = msg Hz ikut turun).
+  var fpsVal = 0, frAvg = 0, frCount = 0, frSum = 0, frT0 = 0;
+  var frPeak = 0, frPeakT = 0;
+  var bannerTxt = '', bannerShown = null, lastDebugT = 0;
   function draw() {
     requestAnimationFrame(draw);
     ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, W, H);
-    drawStars();
+    ctx.fillRect(0, 0, W, H);            // satu-satunya clear full-canvas per frame
+    if (starsEl.checked) drawStars();    // offscreen: 1 drawImage
 
     var now = performance.now();
     var dt = lastFrameT > 0 ? Math.min((now - lastFrameT) / 1000, 0.05) : 0;
+    if (lastFrameT > 0) {
+      var frMs = now - lastFrameT;
+      frCount++; frSum += frMs;
+      if (frT0 === 0) frT0 = now;
+      if (now - frT0 >= 1000) {
+        fpsVal = Math.round(frCount * 1000 / (now - frT0));
+        frAvg = frSum / frCount;
+        frCount = 0; frSum = 0; frT0 = now;
+      }
+      if (frMs >= frPeak || now - frPeakT > 1500) { frPeak = frMs; frPeakT = now; }
+    }
     lastFrameT = now;
 
-    if (mode === 'relative') {
-      bannerEl.textContent = 'RELATIVE — nol kalibrasi, bebas posisi';
-    } else {
-      bannerEl.textContent = 'MAPPING PLACEHOLDER — belum terkalibrasi. Jalankan CALIBRATE untuk mapping homography.';
-    }
-    bannerEl.style.display = (mode !== 'calibrated' && calibStep < 0 && wsState === 'open') ? 'block' : 'none';
+    // DOM ditulis cuma saat BERUBAH — textContent/style per frame = layout sia-sia
+    var bt = mode === 'relative'
+      ? 'RELATIVE — nol kalibrasi, bebas posisi'
+      : 'MAPPING PLACEHOLDER — belum terkalibrasi. Jalankan CALIBRATE untuk mapping homography.';
+    if (bt !== bannerTxt) { bannerTxt = bt; bannerEl.textContent = bt; }
+    var bshow = (mode !== 'calibrated' && calibStep < 0 && wsState === 'open');
+    if (bshow !== bannerShown) { bannerShown = bshow; bannerEl.style.display = bshow ? 'block' : 'none'; }
 
     if (calibStep >= 0) {
       drawCalibTarget();            // pointer sengaja disembunyikan; game dibekukan
@@ -1262,10 +1309,14 @@
       ctx.stroke();
     }
 
+    if (now - lastDebugT < 250) return;  // debug DOM maks 4x/detik, bukan per frame
+    lastDebugT = now;
     var age = lastArrive > 0 ? (performance.now() - lastArrive) : -1;
     debugEl.textContent =
       'conn    ' + wsState + '\n' +
       'msg     ' + msgHz + ' Hz\n' +
+      'fps     ' + fpsVal + '\n' +
+      'frame   ' + frAvg.toFixed(1) + ' ms  peak ' + frPeak.toFixed(1) + '\n' +
       'jitter  ' + jitter.toFixed(1) + ' ms\n' +
       'drop    ' + dropped + ' pkt\n' +
       'age     ' + (age < 0 ? '—' : age.toFixed(0) + ' ms') + '\n' +
