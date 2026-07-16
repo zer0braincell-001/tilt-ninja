@@ -242,8 +242,22 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
     haveData = true;
 
     var now = performance.now();
-    ringBuf.push({ ts: now, q: eulerToQuat(rawAlpha, rawBeta, rawGamma) });
+    var q = eulerToQuat(rawAlpha, rawBeta, rawGamma);   // dihitung SEKALI: ring buffer + kirim
+    ringBuf.push({ ts: now, q: q });
     while (ringBuf.length && now - ringBuf[0].ts > RING_MS) ringBuf.shift();
+
+    // KIRIM DARI EVENT SENSOR, BUKAN dari rAF. Bug lama (utang 34Hz): ambang
+    // 16.67ms dicek di tick rAF yang juga ~16.67ms -> separuh frame gagal lolos
+    // `>=` lalu mundur ke frame berikutnya (33ms) -> efektif ~34Hz. Aliasing
+    // ambang, BUKAN battery saver / rAF throttle. Sensor sendiri 60Hz.
+    if (started && ws && wsState === 'open' && now - lastSend >= SEND_MIN_MS) {
+      lastSend = now;
+      seq++;
+      try {
+        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: now }));
+        sendCnt++;
+      } catch (err) {}
+    }
 
     evCount++;
     if (hzT0 === 0) hzT0 = now;
@@ -272,7 +286,11 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
   // --- net: controller = sensor bodoh, cuma stream quaternion mentah ---
   var ws = null, wsState = 'idle', wantConnect = false;
   var seq = 0, lastSend = 0;
-  var SEND_MIN_MS = 1000 / 60;
+  // 1000/70 ≈ 14.3ms: HARUS di bawah interval sampel 60Hz (16.67ms) biar tiap
+  // sampel lolos ambang (16.67 vs tick 16.67 = aliasing, lihat onOrientation),
+  // tapi tetap nge-cap sensor 90-120Hz supaya nggak banjir relay.
+  var SEND_MIN_MS = 1000 / 70;
+  var sendCnt = 0, sendHz = 0, sendHzT0 = 0;   // laju KIRIM aktual, terpisah dari laju sensor
   var rtt = -1, rttAvg = -1, rttPeak = 0;
   var reconnectTimer = 0;
 
@@ -380,20 +398,21 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
     }, 2000);
   });
 
-  // --- loop kirim: rAF throttle 60/s. Nol render. Debug DOM maks 5x/detik. ---
+  // --- rAF loop: CUMA DOM debug (maks 5x/detik). Kirim sudah PINDAH ke
+  // onOrientation — jangan pernah gantung pengiriman ke scheduler animasi lagi. ---
   var lastDebug = 0;
   function loop() {
     requestAnimationFrame(loop);
     if (!started) return;
     var now = performance.now();
 
-    if (ws && wsState === 'open' && haveData && now - lastSend >= SEND_MIN_MS) {
-      lastSend = now;
-      seq++;
-      var q = eulerToQuat(rawAlpha, rawBeta, rawGamma);
-      try {
-        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: now }));
-      } catch (e) {}
+    // send Hz aktual (jendela 1 detik) — bug aliasing macam kemarin langsung
+    // kelihatan di sini: rate 60 tapi send 34 = pengiriman yang rusak.
+    if (sendHzT0 === 0) sendHzT0 = now;
+    if (now - sendHzT0 >= 1000) {
+      sendHz = Math.round(sendCnt * 1000 / (now - sendHzT0));
+      sendCnt = 0;
+      sendHzT0 = now;
     }
 
     if (now - lastDebug >= 200) {
@@ -402,6 +421,7 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
       debugEl.textContent =
         'src   ' + evName + (haveData ? '' : '  (no data)') + '\n' +
         'rate  ' + hz + ' Hz\n' +
+        'send  ' + sendHz + ' Hz\n' +
         'net   ' + wsState + (rtt < 0 ? '' :
           '  rtt ' + rtt.toFixed(0) + 'ms  avg ' + rttAvg.toFixed(0) + '  peak ' + rttPeak.toFixed(0)) + '\n' +
         (lastCapInfo ? lastCapInfo : '');
