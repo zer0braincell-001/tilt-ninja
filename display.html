@@ -1011,6 +1011,7 @@
   var msgCount = 0, msgHz = 0, msgHzT0 = 0;
   var lastSeq = -1, dropped = 0;
   var lastArrive = 0, dtEma = -1, jitter = 0;
+  var lastEchoT = 0;
 
   var ws = null;
   function connect() {
@@ -1042,10 +1043,15 @@
       if (m.btn === 'mode') { handleModeBtn(m.id); return; }
       if (m.t === undefined || !m.q) return;
 
-      // echo DULUAN, sebelum proses apa pun — RTT ngukur jaringan, bukan render
-      try { ws.send(JSON.stringify({ ack: m.t, ts: m.ts })); } catch (e) {}
-
       var now = performance.now();
+      // echo DULUAN sebelum proses (RTT ngukur jaringan, bukan render), tapi
+      // TIDAK tiap paket: 60 echo/s balik ke relay = beban yang nggak perlu.
+      // ~8x/detik cukup buat readout RTT. dt speed slice TIDAK terpengaruh —
+      // dia pakai timestamp PENGIRIM, bukan echo.
+      if (now - lastEchoT >= 125) {
+        lastEchoT = now;
+        try { ws.send(JSON.stringify({ ack: m.t, ts: m.ts })); } catch (e) {}
+      }
       if (lastArrive > 0) {
         var dt = now - lastArrive;      // waktu nyampe: HANYA buat statistik jaringan
         lastDtRecv = dt;

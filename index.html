@@ -78,7 +78,7 @@
     background: #000; color: #fff;
     border: 1px solid #666;
   }
-  #connectBtn, #modeBtn {
+  #connectBtn, #modeBtn, .rateBtn {
     font: inherit; font-size: 13px;
     padding: 6px 14px;
     background: #222; color: #fff;
@@ -86,7 +86,8 @@
     cursor: pointer;
     flex: none;
   }
-  #connectBtn:active, #modeBtn:active { background: #333; }
+  #connectBtn:active, #modeBtn:active, .rateBtn:active { background: #333; }
+  .rateBtn.act { border-color: #9c9; color: #9c9; }
 
   /* zona tap lebar — dipencet tanpa liat layar */
   #captureBtn {
@@ -149,6 +150,12 @@
     <input id="roomCode" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
     <button id="modeBtn">MODE</button>
+  </div>
+  <div class="row">
+    <label>kirim Hz</label>
+    <button class="rateBtn" id="rate30">30</button>
+    <button class="rateBtn" id="rate45">45</button>
+    <button class="rateBtn" id="rate60">60</button>
   </div>
   <button id="captureBtn">CAPTURE</button>
 </div>
@@ -251,12 +258,21 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
     // `>=` lalu mundur ke frame berikutnya (33ms) -> efektif ~34Hz. Aliasing
     // ambang, BUKAN battery saver / rAF throttle. Sensor sendiri 60Hz.
     if (started && ws && wsState === 'open' && now - lastSend >= SEND_MIN_MS) {
-      lastSend = now;
-      seq++;
-      try {
-        ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: now }));
-        sendCnt++;
-      } catch (err) {}
+      // GUARD ANTRIAN: orientasi = STATE TERKINI, bukan event. Uplink macet
+      // (buffer > 4KB) -> sampel DIBUANG — sampel basi tidak berharga, ngantri
+      // cuma bikin semua di belakangnya telat. CAPTURE/MODE = event, TANPA guard.
+      // lastSend sengaja TIDAK di-update saat skip: begitu buffer longgar,
+      // sampel berikutnya langsung lolos.
+      if (ws.bufferedAmount > 4096) {
+        skipCnt++;
+      } else {
+        lastSend = now;
+        seq++;
+        try {
+          ws.send(JSON.stringify({ t: seq, q: [q.w, q.x, q.y, q.z], ts: now }));
+          sendCnt++;
+        } catch (err) {}
+      }
     }
 
     evCount++;
@@ -286,11 +302,37 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
   // --- net: controller = sensor bodoh, cuma stream quaternion mentah ---
   var ws = null, wsState = 'idle', wantConnect = false;
   var seq = 0, lastSend = 0;
-  // 1000/70 ≈ 14.3ms: HARUS di bawah interval sampel 60Hz (16.67ms) biar tiap
-  // sampel lolos ambang (16.67 vs tick 16.67 = aliasing, lihat onOrientation),
-  // tapi tetap nge-cap sensor 90-120Hz supaya nggak banjir relay.
-  var SEND_MIN_MS = 1000 / 70;
-  var sendCnt = 0, sendHz = 0, sendHzT0 = 0;   // laju KIRIM aktual, terpisah dari laju sensor
+  // LAJU KIRIM DISETEL USER, default 30 (nilai yang terbukti nggak ngelag).
+  // Regresi 60Hz (live-test): uplink HP nggak sanggup 60 msg/s -> ws.send()
+  // numpuk di buffer (ws.send tidak pernah nolak) -> paket makin basi = bufferbloat.
+  // Ngirim lebih cepat != nyampe lebih cepat. 34Hz dulu tanpa sengaja jadi
+  // rate-limit yang bikin antrian kosong.
+  // SEND_MIN_MS = 1000/(rate+10): ambang toleran DI BAWAH interval sampel —
+  // JANGAN pernah samain ambang dengan interval tick pengecek (aliasing).
+  var RATE_KEY = 'tiltNinjaRate';
+  var sendRate = 30;
+  try {
+    var srSaved = parseInt(localStorage.getItem(RATE_KEY), 10);
+    if (srSaved === 30 || srSaved === 45 || srSaved === 60) sendRate = srSaved;
+  } catch (e) {}
+  var SEND_MIN_MS = 1000 / (sendRate + 10);
+  function setRate(r) {
+    sendRate = r;
+    SEND_MIN_MS = 1000 / (r + 10);
+    try { localStorage.setItem(RATE_KEY, String(r)); } catch (e) {}
+    [30, 45, 60].forEach(function (v) {
+      var el = document.getElementById('rate' + v);
+      if (v === r) el.classList.add('act'); else el.classList.remove('act');
+    });
+  }
+  [30, 45, 60].forEach(function (v) {
+    document.getElementById('rate' + v).addEventListener('click', function () { setRate(v); });
+  });
+  setRate(sendRate);
+  // laju KIRIM aktual + sampel dibuang guard antrian — terpisah dari laju sensor
+  var sendCnt = 0, sendHz = 0, sendHzT0 = 0;
+  var skipCnt = 0, skipHz = 0;
+  var bufPeak = 0, bufPeakT = 0;
   var rtt = -1, rttAvg = -1, rttPeak = 0;
   var reconnectTimer = 0;
 
@@ -406,14 +448,21 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
     if (!started) return;
     var now = performance.now();
 
-    // send Hz aktual (jendela 1 detik) — bug aliasing macam kemarin langsung
+    // send/skip Hz aktual (jendela 1 detik) — bug aliasing macam kemarin langsung
     // kelihatan di sini: rate 60 tapi send 34 = pengiriman yang rusak.
     if (sendHzT0 === 0) sendHzT0 = now;
     if (now - sendHzT0 >= 1000) {
       sendHz = Math.round(sendCnt * 1000 / (now - sendHzT0));
+      skipHz = Math.round(skipCnt * 1000 / (now - sendHzT0));
       sendCnt = 0;
+      skipCnt = 0;
       sendHzT0 = now;
     }
+
+    // buf = ws.bufferedAmount: DISKRIMINATOR hipotesis lag. Numpuk/naik =
+    // antrian uplink pelakunya; selalu 0 = bukan antrian, jaringan murni.
+    var buf = ws ? (ws.bufferedAmount || 0) : 0;
+    if (buf >= bufPeak || now - bufPeakT > 3000) { bufPeak = buf; bufPeakT = now; }
 
     if (now - lastDebug >= 200) {
       lastDebug = now;
@@ -421,7 +470,9 @@ Salah pilih? Ada tombol "ganti perangkat" di controller.</div>
       debugEl.textContent =
         'src   ' + evName + (haveData ? '' : '  (no data)') + '\n' +
         'rate  ' + hz + ' Hz\n' +
-        'send  ' + sendHz + ' Hz\n' +
+        'send  ' + sendHz + ' Hz (set ' + sendRate + ')\n' +
+        'skip  ' + skipHz + ' /s\n' +
+        'buf   ' + buf + ' B  peak ' + bufPeak + '\n' +
         'net   ' + wsState + (rtt < 0 ? '' :
           '  rtt ' + rtt.toFixed(0) + 'ms  avg ' + rttAvg.toFixed(0) + '  peak ' + rttPeak.toFixed(0)) + '\n' +
         (lastCapInfo ? lastCapInfo : '');
