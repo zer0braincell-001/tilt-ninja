@@ -142,6 +142,7 @@
     <label class="cb"><input id="fx" type="checkbox" checked> FX</label>
     <label class="cb"><input id="stars" type="checkbox" checked> STARS</label>
     <label class="cb"><input id="sfx" type="checkbox" checked> SFX</label>
+    <label class="cb"><input id="music" type="checkbox" checked> Music</label>
   </div>
   <div class="row">
     <label>relative</label>
@@ -229,7 +230,7 @@
     <input id="room" type="text" value="1234">
     <button id="connectBtn">CONNECT</button>
   </div>
-  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis). S / tombol &#9881; = buka-tutup panel setting. N = mute/unmute SFX.</div>
+  <div class="hint">Buka controller di HP, samakan room code, lalu CONNECT dua-duanya. R = recenter (relative: ke tengah; placeholder: reset basis). S / tombol &#9881; = buka-tutup panel setting. N = mute/unmute SFX. B = mute/unmute music.</div>
 </div>
 
 <script>
@@ -381,18 +382,6 @@
         .catch(function () {});         // file hilang / fetch gagal -> skip suara ini doang
     });
   })();
-  // Browser blokir audio sampai ada gesture. Suara main di DISPLAY, tapi game
-  // digerakin dari HP -> display bisa nggak pernah dapat gesture sendiri. Resume
-  // di gesture pertama (pointerdown/keydown) DAN saat GAME dinyalakan.
-  function resumeAudio() {
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
-  }
-  window.addEventListener('pointerdown', resumeAudio);
-  gameEl.addEventListener('change', function () { if (gameEl.checked) resumeAudio(); });
-  sfxEl.addEventListener('change', function () {
-    sfxEnabled = sfxEl.checked;
-    try { localStorage.setItem(SFX_KEY, JSON.stringify(sfxEnabled)); } catch (e) {}
-  });
   function playSfx(key) {
     // context masih suspended (belum ke-unlock) -> diam, BUKAN error.
     if (!sfxEnabled || !audioCtx || audioCtx.state !== 'running' || !sfxBuffers[key]) return;
@@ -401,6 +390,63 @@
     src.connect(masterGain);
     src.start(0);
   }
+
+  // --- BGM: HTMLAudioElement, BUKAN buffer -- file musik kegedean buat decode
+  // penuh ke memori kayak SFX. Loop selama GAME on; toggle TERPISAH dari mute SFX.
+  var musicEl = document.getElementById('music');
+  var MUSIC_KEY = 'tiltNinjaMusic';
+  var musicEnabled = true;
+  try {
+    var musicSaved = localStorage.getItem(MUSIC_KEY);
+    if (musicSaved !== null) musicEnabled = JSON.parse(musicSaved);
+  } catch (e) {}
+  musicEl.checked = musicEnabled;
+  var bgm = null, bgmPlayPending = false;
+  try {
+    bgm = new Audio('sfx/bgm-space.mp3');
+    bgm.loop = true;
+    bgm.volume = 0.35;                  // di BAWAH SFX -> hentakan meteor tetap pop
+    bgm.preload = 'auto';
+  } catch (e) { bgm = null; }           // konstruksi gagal -> nol musik, nol crash
+  function tryPlayBgm() {
+    if (!bgm || !musicEnabled || !gameEl.checked) return;
+    var p = bgm.play();
+    // play() bisa reject NotAllowedError sebelum ada gesture (game digerakin dari
+    // HP, display sendiri belum tentu pernah dapat gesture). JANGAN throw --
+    // tandai pending, resumeAudio() di gesture pertama yang nyoba lagi.
+    if (p && typeof p.catch === 'function') {
+      p.then(function () { bgmPlayPending = false; })
+        .catch(function () { bgmPlayPending = true; });
+    }
+  }
+  function pauseBgm() {
+    if (!bgm) return;
+    try { bgm.pause(); } catch (e) {}
+  }
+  gameEl.addEventListener('change', function () {
+    if (gameEl.checked) tryPlayBgm(); else pauseBgm();
+  });
+  musicEl.addEventListener('change', function () {
+    musicEnabled = musicEl.checked;
+    try { localStorage.setItem(MUSIC_KEY, JSON.stringify(musicEnabled)); } catch (e) {}
+    if (musicEnabled) tryPlayBgm(); else pauseBgm();
+  });
+
+  // Browser blokir audio sampai ada gesture. Suara main di DISPLAY, tapi game
+  // digerakin dari HP -> display bisa nggak pernah dapat gesture sendiri. Resume
+  // di gesture pertama (pointerdown/keydown) DAN saat GAME dinyalakan; BGM yang
+  // ke-reject reuse gesture yang SAMA buat retry, bukan listener baru.
+  function resumeAudio() {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
+    if (bgmPlayPending) tryPlayBgm();
+  }
+  window.addEventListener('pointerdown', resumeAudio);
+  gameEl.addEventListener('change', function () { if (gameEl.checked) resumeAudio(); });
+  sfxEl.addEventListener('change', function () {
+    sfxEnabled = sfxEl.checked;
+    try { localStorage.setItem(SFX_KEY, JSON.stringify(sfxEnabled)); } catch (e) {}
+  });
+
   // --- quaternion & vector math ---
   var R2D = 180 / Math.PI;
   // rotasi vektor [0,1,0] (sumbu +Y device = ujung pointer) oleh quaternion ABSOLUT q
@@ -1180,6 +1226,12 @@
       sfxEnabled = !sfxEnabled;
       sfxEl.checked = sfxEnabled;
       try { localStorage.setItem(SFX_KEY, JSON.stringify(sfxEnabled)); } catch (err) {}
+    }
+    if (e.key === 'b' || e.key === 'B') {
+      musicEnabled = !musicEnabled;
+      musicEl.checked = musicEnabled;
+      try { localStorage.setItem(MUSIC_KEY, JSON.stringify(musicEnabled)); } catch (err) {}
+      if (musicEnabled) tryPlayBgm(); else pauseBgm();
     }
     resumeAudio();
   });
